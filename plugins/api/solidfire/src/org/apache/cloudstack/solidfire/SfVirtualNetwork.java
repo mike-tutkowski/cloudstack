@@ -14,10 +14,27 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-(function($, cloudStack) {
-  cloudStack.plugins = [
-    // 'testPlugin',
-    // 'sfSharedVolume',
-    // 'sfAdministration'
-  ];
-}(jQuery, cloudStack));
+package org.apache.cloudstack.solidfire;
+
+import org.apache.cloudstack.api.Identity;
+import org.apache.cloudstack.api.InternalIdentity;
+
+public interface SfVirtualNetwork extends Identity, InternalIdentity {
+    long getSfId();
+
+    String getName();
+
+    String getTag();
+
+    String getStartIp();
+
+    int getSize();
+
+    String getNetmask();
+
+    String getSvip();
+
+    long getAccountId();
+
+    long getSfClusterId();
+}

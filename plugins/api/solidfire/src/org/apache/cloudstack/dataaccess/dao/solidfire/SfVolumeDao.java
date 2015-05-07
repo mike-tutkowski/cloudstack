@@ -14,10 +14,14 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-(function($, cloudStack) {
-  cloudStack.plugins = [
-    // 'testPlugin',
-    // 'sfSharedVolume',
-    // 'sfAdministration'
-  ];
-}(jQuery, cloudStack));
+package org.apache.cloudstack.dataaccess.dao.solidfire;
+
+import java.util.List;
+
+import org.apache.cloudstack.dataaccess.vo.solidfire.SfVolumeVO;
+
+import com.cloud.utils.db.GenericDao;
+
+public interface SfVolumeDao extends GenericDao<SfVolumeVO, Long> {
+    List<SfVolumeVO> findBySfVirtualNetworkId(long sfVirtualNetworkId);
+}
