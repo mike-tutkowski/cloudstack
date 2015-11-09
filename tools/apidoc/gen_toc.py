@@ -172,7 +172,8 @@ known_categories = {
     'CacheStore' : 'Cache Store',
     'IAM' : 'IAM',
     'OvsElement' : 'Ovs Element',
-    'StratosphereSsp' : ' Stratosphere SSP'
+    'StratosphereSsp' : ' Stratosphere SSP',
+    'Sioc' : 'Sioc'
     }
 
 
