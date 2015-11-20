@@ -37,7 +37,7 @@ public class UpdateSiocInfoCmd extends BaseCmd {
     private static final String s_name = "updatesiocinforesponse";
 
     @Parameter(name = ApiConstants.ZONE_ID, type = CommandType.UUID, entityType = ZoneResponse.class, description = "Zone ID", required = true)
-    private Long _zoneId;
+    private long _zoneId;
 
     @Parameter(name = "storagetag", type = CommandType.STRING, description = "Storage Tag to leverage", required = true)
     private String _storageTag;

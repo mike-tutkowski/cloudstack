@@ -16,9 +16,6 @@
 // under the License.
 package org.apache.cloudstack.solidfire;
 
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.rmi.RemoteException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -30,17 +27,20 @@ import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolDetailVO;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolDetailsDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
+import org.apache.cloudstack.util.LoginInfo;
+import org.apache.cloudstack.util.vmware.VMwareUtil;
 import org.apache.log4j.Logger;
 import org.springframework.stereotype.Component;
 
 import com.cloud.dc.DataCenterVO;
 import com.cloud.dc.dao.DataCenterDao;
-import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.hypervisor.vmware.VmwareDatacenterVO;
 import com.cloud.hypervisor.vmware.VmwareDatacenterZoneMapVO;
 import com.cloud.hypervisor.vmware.dao.VmwareDatacenterDao;
 import com.cloud.hypervisor.vmware.dao.VmwareDatacenterZoneMapDao;
 import com.cloud.storage.DiskOfferingVO;
+import com.cloud.storage.ScopeType;
+import com.cloud.storage.Storage.StoragePoolType;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.storage.dao.VolumeDao;
@@ -48,6 +48,7 @@ import com.cloud.utils.db.GlobalLock;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.dao.VMInstanceDao;
 
+import com.vmware.vim25.ManagedObjectReference;
 import com.vmware.vim25.SharesInfo;
 import com.vmware.vim25.StorageIOAllocationInfo;
 import com.vmware.vim25.VirtualDevice;
@@ -58,10 +59,6 @@ import com.vmware.vim25.VirtualIDEController;
 import com.vmware.vim25.VirtualMachineConfigInfo;
 import com.vmware.vim25.VirtualMachineConfigSpec;
 import com.vmware.vim25.VirtualSCSIController;
-import com.vmware.vim25.mo.InventoryNavigator;
-import com.vmware.vim25.mo.ServiceInstance;
-import com.vmware.vim25.mo.Task;
-import com.vmware.vim25.mo.VirtualMachine;
 
 @Component
 public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
@@ -104,12 +101,12 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
             throw new Exception("Busy: The system is already processing this request.");
         }
 
-        ServiceInstance serviceInstance = null;
+        VMwareUtil.VMwareConnection connection = null;
 
         try {
-            serviceInstance = getServiceInstance(zoneId);
+            connection = VMwareUtil.getVMwareConnection(getLoginInfo(zoneId));
 
-            List<Task> allTasks = new ArrayList<>();
+            List<ManagedObjectReference> allTasks = new ArrayList<>();
 
             for (StoragePoolDetailVO detail : details) {
                 if (storageTag.equalsIgnoreCase(detail.getName()) && Boolean.TRUE.toString().equalsIgnoreCase(detail.getValue())) {
@@ -117,7 +114,7 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
                     StoragePoolVO storagePool = _storagePoolDao.findById(storagePoolId);
 
                     if (storagePool != null && storagePool.getDataCenterId() == zoneId &&
-                            storagePool.getHypervisor().equals(HypervisorType.VMware)) {
+                            storagePool.getScope().equals(ScopeType.CLUSTER) && storagePool.getPoolType().equals(StoragePoolType.VMFS)) {
                         List<VolumeVO> volumes = _volumeDao.findByPoolId(storagePoolId, null);
 
                         if (volumes != null && volumes.size() > 0) {
@@ -132,7 +129,7 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
                             }
 
                             for (Long instanceId : instanceIds) {
-                                List<Task> tasks = updateSiocInfo(instanceId, storagePool, serviceInstance);
+                                List<ManagedObjectReference> tasks = updateSiocInfo(instanceId, storagePool, connection);
 
                                 allTasks.addAll(tasks);
                             }
@@ -141,20 +138,21 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
                 }
             }
 
-            for (Task task : allTasks) {
-                task.waitForTask();
+            for (ManagedObjectReference task : allTasks) {
+                VMwareUtil.waitForTask(connection, task);
             }
         }
         finally {
-            closeServiceInstance(serviceInstance);
+            VMwareUtil.closeVMwareConnection(connection);
 
             lock.unlock();
             lock.releaseRef();
         }
     }
 
-    private List<Task> updateSiocInfo(Long instanceId, StoragePoolVO storagePool, ServiceInstance serviceInstance) throws Exception {
-        List<Task> tasks = new ArrayList<>();
+    private List<ManagedObjectReference> updateSiocInfo(Long instanceId, StoragePoolVO storagePool,
+            VMwareUtil.VMwareConnection connection) throws Exception {
+        List<ManagedObjectReference> tasks = new ArrayList<>();
 
         VMInstanceVO vmInstance = _vmInstanceDao.findById(instanceId);
 
@@ -166,9 +164,10 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
 
         String vmName = vmInstance.getInstanceName();
 
-        VirtualMachine vm = (VirtualMachine)new InventoryNavigator(serviceInstance.getRootFolder()).searchManagedEntity("VirtualMachine", vmName);
-        VirtualMachineConfigInfo vmci = vm.getConfig();
-        VirtualDevice[] devices = vmci.getHardware().getDevice();
+        ManagedObjectReference morVm = VMwareUtil.getVmByName(connection, vmName);
+        VirtualMachineConfigInfo vmci = (VirtualMachineConfigInfo)VMwareUtil.getEntityProps(connection, morVm,
+                new String[] { "config" }).get("config");
+        List<VirtualDevice> devices = vmci.getHardware().getDevice();
 
         for (VirtualDevice device : devices) {
             if (device instanceof VirtualDisk) {
@@ -209,13 +208,13 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
                         VirtualDeviceConfigSpec vdcs = new VirtualDeviceConfigSpec();
 
                         vdcs.setDevice(disk);
-                        vdcs.setOperation(VirtualDeviceConfigSpecOperation.edit);
+                        vdcs.setOperation(VirtualDeviceConfigSpecOperation.EDIT);
 
                         VirtualMachineConfigSpec vmcs = new VirtualMachineConfigSpec();
 
-                        vmcs.setDeviceChange(new VirtualDeviceConfigSpec[] { vdcs });
+                        vmcs.getDeviceChange().add(vdcs);
 
-                        Task task = vm.reconfigVM_Task(vmcs);
+                        ManagedObjectReference task = VMwareUtil.reconfigureVm(connection, morVm, vmcs);
 
                         tasks.add(task);
                     }
@@ -226,11 +225,11 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
         return tasks;
     }
 
-    private VolumeVO getVolumeFromVirtualDisk(VMInstanceVO vmInstance, long storagePoolId, VirtualDevice[] allDevices,
+    private VolumeVO getVolumeFromVirtualDisk(VMInstanceVO vmInstance, long storagePoolId, List<VirtualDevice> allDevices,
             VirtualDisk disk) throws Exception {
         List<VolumeVO> volumes = _volumeDao.findByInstance(vmInstance.getId());
 
-        final String errMsg = "The VMware virtual disk " + disk.getDiskObjectId() + " could not be mapped to a CloudStack volume.";
+        final String errMsg = "The VMware virtual disk " + disk + " could not be mapped to a CloudStack volume.";
 
         if (volumes == null || volumes.size() == 0) {
             throw new Exception(errMsg + " There were no volumes for the VM with the following ID: " + vmInstance.getId() + ".");
@@ -249,7 +248,7 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
         throw new Exception(errMsg);
     }
 
-    private String getDeviceBusName(VirtualDevice[] allDevices, VirtualDisk disk) throws Exception {
+    private String getDeviceBusName(List<VirtualDevice> allDevices, VirtualDisk disk) throws Exception {
         for (VirtualDevice device : allDevices) {
             if (device.getKey() == disk.getControllerKey().intValue()) {
                 if (device instanceof VirtualIDEController) {
@@ -310,7 +309,7 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
         return maxIops;
     }
 
-    private ServiceInstance getServiceInstance(long zoneId) throws RemoteException, MalformedURLException {
+    private LoginInfo getLoginInfo(long zoneId) {
         VmwareDatacenterZoneMapVO vmwareDcZoneMap = _vmwareDcZoneMapDao.findByZoneId(zoneId);
         Long associatedVmwareDcId = vmwareDcZoneMap.getVmwareDcId();
         VmwareDatacenterVO associatedVmwareDc = _vmwareDcDao.findById(associatedVmwareDcId);
@@ -319,12 +318,6 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
         String username = associatedVmwareDc.getUser();
         String password = associatedVmwareDc.getPassword();
 
-        return new ServiceInstance(new URL("https://" + host + "/sdk"), username, password, true);
-    }
-
-    private void closeServiceInstance(ServiceInstance serviceInstance) {
-        if (serviceInstance != null) {
-            serviceInstance.getServerConnection().logout();
-        }
+        return new LoginInfo(host, username, password);
     }
 }

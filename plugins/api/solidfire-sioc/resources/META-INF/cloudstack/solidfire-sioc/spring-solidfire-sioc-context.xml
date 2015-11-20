@@ -28,5 +28,6 @@
                       >
 
       <bean id="apiSolidFireSiocServiceImpl" class="org.apache.cloudstack.api.solidfire.ApiSolidFireSiocServiceImpl"/>
+      <bean id="solidFireSiocManagerImpl" class="org.apache.cloudstack.solidfire.SolidFireSiocManagerImpl"/>
 
 </beans>
