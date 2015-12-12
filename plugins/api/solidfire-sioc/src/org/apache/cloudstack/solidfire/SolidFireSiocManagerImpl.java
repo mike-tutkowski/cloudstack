@@ -38,6 +38,8 @@ import com.cloud.hypervisor.vmware.VmwareDatacenterVO;
 import com.cloud.hypervisor.vmware.VmwareDatacenterZoneMapVO;
 import com.cloud.hypervisor.vmware.dao.VmwareDatacenterDao;
 import com.cloud.hypervisor.vmware.dao.VmwareDatacenterZoneMapDao;
+import com.cloud.hypervisor.vmware.mo.VirtualMachineDiskInfo;
+import com.cloud.hypervisor.vmware.mo.VirtualMachineDiskInfoBuilder;
 import com.cloud.storage.DiskOfferingVO;
 import com.cloud.storage.ScopeType;
 import com.cloud.storage.Storage.StoragePoolType;
@@ -50,15 +52,14 @@ import com.cloud.vm.dao.VMInstanceDao;
 
 import com.vmware.vim25.ManagedObjectReference;
 import com.vmware.vim25.SharesInfo;
+import com.vmware.vim25.SharesLevel;
 import com.vmware.vim25.StorageIOAllocationInfo;
 import com.vmware.vim25.VirtualDevice;
 import com.vmware.vim25.VirtualDeviceConfigSpec;
 import com.vmware.vim25.VirtualDeviceConfigSpecOperation;
 import com.vmware.vim25.VirtualDisk;
-import com.vmware.vim25.VirtualIDEController;
 import com.vmware.vim25.VirtualMachineConfigInfo;
 import com.vmware.vim25.VirtualMachineConfigSpec;
-import com.vmware.vim25.VirtualSCSIController;
 
 @Component
 public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
@@ -175,7 +176,7 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
 
                 VolumeVO volumeVO = getVolumeFromVirtualDisk(vmInstance, storagePool.getId(), devices, disk);
 
-                if (volumeVO.getPoolId() != null && volumeVO.getPoolId() == storagePool.getId()) {
+                if (volumeVO != null) {
                     boolean diskUpdated = false;
 
                     SharesInfo sharesInfo = disk.getShares();
@@ -184,6 +185,7 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
                     Integer newShares = getNewShares(volumeVO);
 
                     if (newShares != null && currentShares != newShares) {
+                        sharesInfo.setLevel(SharesLevel.CUSTOM);
                         sharesInfo.setShares(newShares);
 
                         disk.setShares(sharesInfo);
@@ -229,39 +231,37 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
             VirtualDisk disk) throws Exception {
         List<VolumeVO> volumes = _volumeDao.findByInstance(vmInstance.getId());
 
-        final String errMsg = "The VMware virtual disk " + disk + " could not be mapped to a CloudStack volume.";
-
         if (volumes == null || volumes.size() == 0) {
-            throw new Exception(errMsg + " There were no volumes for the VM with the following ID: " + vmInstance.getId() + ".");
+            final String errMsg = "The VMware virtual disk " + disk + " could not be mapped to a CloudStack volume. " +
+                    "There were no volumes for the VM with the following ID: " + vmInstance.getId() + ".";
+
+            throw new Exception(errMsg);
         }
+
+        VirtualMachineDiskInfoBuilder diskInfoBuilder = VMwareUtil.getDiskInfoBuilder(allDevices);
 
         for (VolumeVO volume : volumes) {
-            if (volume.getPoolId() != null && volume.getPoolId() == storagePoolId) {
-                String deviceBusName = getDeviceBusName(allDevices, disk);
+            Long poolId = volume.getPoolId();
 
-                if (volume.getChainInfo().contains(deviceBusName)) {
-                    return volume;
+            if (poolId != null && poolId == storagePoolId) {
+                StoragePoolVO storagePool = _storagePoolDao.findById(poolId);
+                String path = storagePool.getPath();
+                String charToSearchFor = "/";
+                int index = path.lastIndexOf(charToSearchFor) + charToSearchFor.length();
+                String datastoreName = path.substring(index);
+                VirtualMachineDiskInfo diskInfo = diskInfoBuilder.getDiskInfoByBackingFileBaseName(volume.getPath(), datastoreName);
+
+                if (diskInfo != null) {
+                    String deviceBusName = VMwareUtil.getDeviceBusName(allDevices, disk);
+
+                    if (deviceBusName.equals(diskInfo.getDiskDeviceBusName())) {
+                        return volume;
+                    }
                 }
             }
         }
 
-        throw new Exception(errMsg);
-    }
-
-    private String getDeviceBusName(List<VirtualDevice> allDevices, VirtualDisk disk) throws Exception {
-        for (VirtualDevice device : allDevices) {
-            if (device.getKey() == disk.getControllerKey().intValue()) {
-                if (device instanceof VirtualIDEController) {
-                    return String.format("ide%d:%d", ((VirtualIDEController)device).getBusNumber(), disk.getUnitNumber());
-                } else if (device instanceof VirtualSCSIController) {
-                    return String.format("scsi%d:%d", ((VirtualSCSIController)device).getBusNumber(), disk.getUnitNumber());
-                } else {
-                    throw new Exception("The device controller is not supported.");
-                }
-            }
-        }
-
-        throw new Exception("The device controller could not be located.");
+        return null;
     }
 
     private Integer getNewShares(VolumeVO volumeVO) {

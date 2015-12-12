@@ -37,6 +37,7 @@ import javax.xml.ws.WebServiceException;
 import org.apache.cloudstack.util.LoginInfo;
 import org.apache.log4j.Logger;
 
+import com.cloud.hypervisor.vmware.mo.VirtualMachineDiskInfoBuilder;
 import com.vmware.vim25.DynamicProperty;
 import com.vmware.vim25.InvalidCollectorVersionFaultMsg;
 import com.vmware.vim25.InvalidPropertyFaultMsg;
@@ -61,7 +62,13 @@ import com.vmware.vim25.TraversalSpec;
 import com.vmware.vim25.UpdateSet;
 import com.vmware.vim25.VimPortType;
 import com.vmware.vim25.VimService;
+import com.vmware.vim25.VirtualDevice;
+import com.vmware.vim25.VirtualDeviceBackingInfo;
+import com.vmware.vim25.VirtualDisk;
+import com.vmware.vim25.VirtualDiskFlatVer2BackingInfo;
+import com.vmware.vim25.VirtualIDEController;
 import com.vmware.vim25.VirtualMachineConfigSpec;
+import com.vmware.vim25.VirtualSCSIController;
 
 public class VMwareUtil {
     private static final Logger s_logger = Logger.getLogger(VMwareUtil.class);
@@ -122,7 +129,9 @@ public class VMwareUtil {
     }
 
     public static void closeVMwareConnection(VMwareConnection connection) throws Exception {
-        connection.getVimPortType().logout(connection.getServiceContent().getSessionManager());
+        if (connection != null) {
+            connection.getVimPortType().logout(connection.getServiceContent().getSessionManager());
+        }
     }
 
     public static ManagedObjectReference getVmByName(VMwareConnection connection, String vmName) throws Exception {
@@ -246,6 +255,49 @@ public class VMwareUtil {
     public static ManagedObjectReference reconfigureVm(VMwareConnection connection, ManagedObjectReference morVm,
             VirtualMachineConfigSpec vmcs) throws Exception {
         return connection.getVimPortType().reconfigVMTask(morVm, vmcs);
+    }
+
+    public static VirtualMachineDiskInfoBuilder getDiskInfoBuilder(List<VirtualDevice> devices) throws Exception {
+        VirtualMachineDiskInfoBuilder builder = new VirtualMachineDiskInfoBuilder();
+
+        if (devices != null) {
+            for (VirtualDevice device : devices) {
+                if (device instanceof VirtualDisk) {
+                    VirtualDisk virtualDisk = (VirtualDisk)device;
+                    VirtualDeviceBackingInfo backingInfo = virtualDisk.getBacking();
+
+                    if (backingInfo instanceof VirtualDiskFlatVer2BackingInfo) {
+                        VirtualDiskFlatVer2BackingInfo diskBackingInfo = (VirtualDiskFlatVer2BackingInfo)backingInfo;
+
+                        String deviceBusName = VMwareUtil.getDeviceBusName(devices, virtualDisk);
+
+                        while (diskBackingInfo != null) {
+                            builder.addDisk(deviceBusName, diskBackingInfo.getFileName());
+
+                            diskBackingInfo = diskBackingInfo.getParent();
+                        }
+                    }
+                }
+            }
+        }
+
+        return builder;
+    }
+
+    public static String getDeviceBusName(List<VirtualDevice> allDevices, VirtualDisk disk) throws Exception {
+        for (VirtualDevice device : allDevices) {
+            if (device.getKey() == disk.getControllerKey().intValue()) {
+                if (device instanceof VirtualIDEController) {
+                    return String.format("ide%d:%d", ((VirtualIDEController)device).getBusNumber(), disk.getUnitNumber());
+                } else if (device instanceof VirtualSCSIController) {
+                    return String.format("scsi%d:%d", ((VirtualSCSIController)device).getBusNumber(), disk.getUnitNumber());
+                } else {
+                    throw new Exception("The device controller is not supported.");
+                }
+            }
+        }
+
+        throw new Exception("The device controller could not be located.");
     }
 
     public static boolean waitForTask(VMwareConnection connection, ManagedObjectReference task) throws Exception {
