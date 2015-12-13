@@ -158,7 +158,7 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
         VMInstanceVO vmInstance = _vmInstanceDao.findById(instanceId);
 
         if (vmInstance == null) {
-            s_logger.warn("The VM with ID " + instanceId + " could not be located.");
+            s_logger.warn(SolidFireSiocManagerImpl.class.getName() + ": " + "The VM with ID " + instanceId + " could not be located.");
 
             return tasks;
         }
@@ -179,7 +179,9 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
                 if (volumeVO != null) {
                     boolean diskUpdated = false;
 
-                    SharesInfo sharesInfo = disk.getShares();
+                    StorageIOAllocationInfo sioai = disk.getStorageIOAllocation();
+
+                    SharesInfo sharesInfo = sioai.getShares();
 
                     int currentShares = sharesInfo.getShares();
                     Integer newShares = getNewShares(volumeVO);
@@ -188,20 +190,14 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
                         sharesInfo.setLevel(SharesLevel.CUSTOM);
                         sharesInfo.setShares(newShares);
 
-                        disk.setShares(sharesInfo);
-
                         diskUpdated = true;
                     }
-
-                    StorageIOAllocationInfo sioai = disk.getStorageIOAllocation();
 
                     long currentLimitIops = sioai.getLimit() !=  null ? sioai.getLimit() : Long.MIN_VALUE;
                     Long newLimitIops = getNewLimitIops(volumeVO);
 
                     if (newLimitIops != null && currentLimitIops != newLimitIops) {
                         sioai.setLimit(newLimitIops);
-
-                        disk.setStorageIOAllocation(sioai);
 
                         diskUpdated = true;
                     }
@@ -216,9 +212,14 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
 
                         vmcs.getDeviceChange().add(vdcs);
 
-                        ManagedObjectReference task = VMwareUtil.reconfigureVm(connection, morVm, vmcs);
+                        try {
+                            ManagedObjectReference task = VMwareUtil.reconfigureVm(connection, morVm, vmcs);
 
-                        tasks.add(task);
+                            tasks.add(task);
+                        }
+                        catch (Exception ex) {
+                            s_logger.warn(SolidFireSiocManagerImpl.class.getName() + ": " + ex.getMessage());
+                        }
                     }
                 }
             }
@@ -265,48 +266,47 @@ public class SolidFireSiocManagerImpl implements SolidFireSiocManager {
     }
 
     private Integer getNewShares(VolumeVO volumeVO) {
+        Long minIops = null;
+
         Long diskOfferingId = volumeVO.getDiskOfferingId();
 
-        if (diskOfferingId == null) {
-            return null;
+        if (diskOfferingId != null) {
+            DiskOfferingVO diskOffering = _diskOfferingDao.findById(diskOfferingId);
+
+            if (diskOffering != null && diskOffering.isCustomizedIops() == false) {
+                minIops = diskOffering.getMinIops();
+            }
         }
 
-        DiskOfferingVO diskOffering = _diskOfferingDao.findById(diskOfferingId);
-
-        if (diskOffering == null) {
-            return null;
-        }
-
-        Long minIops = diskOffering.getMinIops();
-
-        if (minIops == null) {
-            return null;
+        if (minIops != null) {
+            // it's OK to convert from Long to int here (the IOPS top out at 100,000 per volume)
+            return minIops.intValue();
         }
 
         // it's OK to convert from Long to int here (the IOPS top out at 100,000 per volume)
-        return minIops.intValue();
+        return volumeVO.getMinIops() != null ? volumeVO.getMinIops().intValue() : null;
     }
 
     private Long getNewLimitIops(VolumeVO volumeVO) {
+        Long maxIops = null;
+
         Long diskOfferingId = volumeVO.getDiskOfferingId();
 
-        if (diskOfferingId == null) {
-            return null;
+        if (diskOfferingId != null) {
+            DiskOfferingVO diskOffering = _diskOfferingDao.findById(diskOfferingId);
+
+            if (diskOffering != null && diskOffering.isCustomizedIops() == false) {
+                maxIops = diskOffering.getMaxIops();
+            }
         }
 
-        DiskOfferingVO diskOffering = _diskOfferingDao.findById(diskOfferingId);
-
-        if (diskOffering == null) {
-            return null;
+        if (maxIops != null) {
+            // it's OK to convert from Long to int here (the IOPS top out at 100,000 per volume)
+            return maxIops;
         }
 
-        Long maxIops = diskOffering.getMaxIops();
-
-        if (maxIops == null) {
-            return null;
-        }
-
-        return maxIops;
+        // it's OK to convert from Long to int here (the IOPS top out at 100,000 per volume)
+        return volumeVO.getMaxIops();
     }
 
     private LoginInfo getLoginInfo(long zoneId) {
