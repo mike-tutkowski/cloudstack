@@ -24,11 +24,12 @@ public class VmWorkResizeVolume extends VmWork {
     private long newSize;
     private Long newMinIops;
     private Long newMaxIops;
+    private Integer newHypervisorSnapshotReserve;
     private Long newServiceOfferingId;
     private boolean shrinkOk;
 
     public VmWorkResizeVolume(long userId, long accountId, long vmId, String handlerName,
-            long volumeId, long currentSize, long newSize, Long newMinIops, Long newMaxIops, Long newServiceOfferingId, boolean shrinkOk) {
+            long volumeId, long currentSize, long newSize, Long newMinIops, Long newMaxIops, Integer newHypervisorSnapshotReserve, Long newServiceOfferingId, boolean shrinkOk) {
 
         super(userId, accountId, vmId, handlerName);
 
@@ -37,6 +38,7 @@ public class VmWorkResizeVolume extends VmWork {
         this.newSize = newSize;
         this.newMinIops = newMinIops;
         this.newMaxIops = newMaxIops;
+        this.newHypervisorSnapshotReserve = newHypervisorSnapshotReserve;
         this.newServiceOfferingId = newServiceOfferingId;
         this.shrinkOk = shrinkOk;
     }
@@ -67,5 +69,9 @@ public class VmWorkResizeVolume extends VmWork {
 
     public boolean isShrinkOk() {
         return shrinkOk;
+    }
+
+    public Integer getNewHypervisorSnapshotReserve() {
+        return newHypervisorSnapshotReserve;
     }
 }

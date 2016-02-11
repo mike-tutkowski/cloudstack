@@ -169,7 +169,7 @@ public class CloudStackPrimaryDataStoreDriverImpl implements PrimaryDataStoreDri
     }
 
     @Override
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume) {
         return volume.getSize();
     }
 

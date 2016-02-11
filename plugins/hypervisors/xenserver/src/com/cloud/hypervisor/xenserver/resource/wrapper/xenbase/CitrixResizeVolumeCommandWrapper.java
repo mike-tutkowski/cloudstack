@@ -19,6 +19,9 @@
 
 package com.cloud.hypervisor.xenserver.resource.wrapper.xenbase;
 
+import com.cloud.utils.exception.CloudRuntimeException;
+import com.xensource.xenapi.PBD;
+import com.xensource.xenapi.SR;
 import org.apache.log4j.Logger;
 
 import com.cloud.agent.api.Answer;
@@ -29,6 +32,9 @@ import com.cloud.resource.CommandWrapper;
 import com.cloud.resource.ResourceWrapper;
 import com.xensource.xenapi.Connection;
 import com.xensource.xenapi.VDI;
+
+import java.util.HashSet;
+import java.util.Set;
 
 @ResourceWrapper(handles =  ResizeVolumeCommand.class)
 public final class CitrixResizeVolumeCommandWrapper extends CommandWrapper<ResizeVolumeCommand, Answer, CitrixResourceBase> {
@@ -42,6 +48,44 @@ public final class CitrixResizeVolumeCommandWrapper extends CommandWrapper<Resiz
         final long newSize = command.getNewSize();
 
         try {
+
+            if (command.isManaged()) {
+                //if this is a managed storage, resize the SR too
+                //the LUN has already been resized so the SR
+                //needs to fill up the new space
+                String iScsiName = command.getIscsiName();
+
+                try {
+
+                    final Set<SR> srs = SR.getByNameLabel(conn, iScsiName);
+                    Set<PBD> allPbds = new HashSet<>();
+
+                    for (final SR sr : srs) {
+                        if (!CitrixResourceBase.SRType.LVMOISCSI.equals(sr.getType(conn))) {
+                            continue;
+                        }
+
+                        Set<PBD> pbds = sr.getPBDs(conn);
+
+                        if (pbds.size() <= 0) {
+                            s_logger.debug("No PBDs found for this SR : " + sr.getNameLabel(conn));
+                        }
+
+                        allPbds.addAll(pbds);
+                    }
+
+                    for (final PBD pbd: allPbds) {
+                        PBD.Record pbdr = pbd.getRecord(conn);
+                        if (pbdr.currentlyAttached) {
+                            pbd.unplug(conn);
+                            pbd.plug(conn);
+                        }
+                    }
+                } catch (Exception e) {
+                    throw new CloudRuntimeException("Unable to resize volume :" +  e.getMessage());
+                }
+            }
+
             final VDI vdi = citrixResourceBase.getVDIbyUuid(conn, volid);
             vdi.resize(conn, newSize);
             return new ResizeVolumeAnswer(command, true, "success", newSize);

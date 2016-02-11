@@ -827,6 +827,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         Long newSize = null;
         Long newMinIops = null;
         Long newMaxIops = null;
+        Integer newHypervisorSnapshotReserve = null;
         boolean shrinkOk = cmd.getShrinkOk();
 
         VolumeVO volume = _volsDao.findById(cmd.getEntityId());
@@ -869,6 +870,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         // if we are to use the existing disk offering
         if (newDiskOffering == null) {
             newSize = cmd.getSize();
+            newHypervisorSnapshotReserve = volume.getHypervisorSnapshotReserve();
 
             // if the caller is looking to change the size of the volume
             if (newSize != null) {
@@ -963,6 +965,8 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
                 newMinIops = newDiskOffering.getMinIops();
                 newMaxIops = newDiskOffering.getMaxIops();
             }
+
+            newHypervisorSnapshotReserve = newDiskOffering.getHypervisorSnapshotReserve();
         }
 
         long currentSize = volume.getSize();
@@ -1001,6 +1005,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             volume.setSize(newSize);
             volume.setMinIops(newMinIops);
             volume.setMaxIops(newMaxIops);
+            volume.setHypervisorSnapshotReserve(newHypervisorSnapshotReserve);
 
             if (newDiskOffering != null) {
                 volume.setDiskOfferingId(cmd.getNewDiskOfferingId());
@@ -1026,13 +1031,13 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
 
                 try {
                     return orchestrateResizeVolume(volume.getId(), currentSize, newSize, newMinIops, newMaxIops,
-                            newDiskOffering != null ? cmd.getNewDiskOfferingId() : null, shrinkOk);
+                            newHypervisorSnapshotReserve, newDiskOffering != null ? cmd.getNewDiskOfferingId() : null, shrinkOk);
                 } finally {
                     _workJobDao.expunge(placeHolder.getId());
                 }
             } else {
                 Outcome<Volume> outcome = resizeVolumeThroughJobQueue(userVm.getId(), volume.getId(), currentSize, newSize, newMinIops, newMaxIops,
-                        newDiskOffering != null ? cmd.getNewDiskOfferingId() : null, shrinkOk);
+                        newHypervisorSnapshotReserve, newDiskOffering != null ? cmd.getNewDiskOfferingId() : null, shrinkOk);
 
                 try {
                     outcome.get();
@@ -1067,7 +1072,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         }
 
         return orchestrateResizeVolume(volume.getId(), currentSize, newSize, newMinIops, newMaxIops,
-                newDiskOffering != null ? cmd.getNewDiskOfferingId() : null, shrinkOk);
+                newHypervisorSnapshotReserve, newDiskOffering != null ? cmd.getNewDiskOfferingId() : null, shrinkOk);
     }
 
     private static boolean areIntegersEqual(Integer i1, Integer i2) {
@@ -1094,9 +1099,11 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         }
     }
 
-    private VolumeVO orchestrateResizeVolume(long volumeId, long currentSize, long newSize, Long newMinIops, Long newMaxIops, Long newDiskOfferingId, boolean shrinkOk) {
+    private VolumeVO orchestrateResizeVolume(long volumeId, long currentSize, long newSize, Long newMinIops, Long newMaxIops, Integer newHypervisorSnapshotReserve, Long newDiskOfferingId, boolean shrinkOk) {
         VolumeVO volume = _volsDao.findById(volumeId);
         UserVmVO userVm = _userVmDao.findById(volume.getInstanceId());
+        StoragePoolVO storagePool = _storagePoolDao.findById(volume.getPoolId());
+        boolean isManaged = storagePool.isManaged();
         /*
          * get a list of hosts to send the commands to, try the system the
          * associated vm is running on first, then the last known place it ran.
@@ -1115,7 +1122,6 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
 
             final String errorMsg = "The VM must be stopped or the disk detached in order to resize with the XenServer Hypervisor.";
 
-            StoragePoolVO storagePool = _storagePoolDao.findById(volume.getPoolId());
 
             if (storagePool.isManaged() && storagePool.getHypervisor() == HypervisorType.Any && hosts != null && hosts.length > 0) {
                 HostVO host = _hostDao.findById(hosts[0]);
@@ -1131,13 +1137,19 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             }
         }
 
-        ResizeVolumePayload payload = new ResizeVolumePayload(newSize, newMinIops, newMaxIops, shrinkOk, instanceName, hosts);
+        ResizeVolumePayload payload = new ResizeVolumePayload(newSize, newMinIops, newMaxIops, newHypervisorSnapshotReserve, shrinkOk, instanceName, hosts, isManaged);
 
         try {
             VolumeInfo vol = volFactory.getVolume(volume.getId());
             vol.addPayload(payload);
 
-            StoragePoolVO storagePool = _storagePoolDao.findById(vol.getPoolId());
+            // this call to resize has a different impact depending on whether the
+            // underlying primary storage is managed or not
+            // if managed, this is the chance for the plug-in to change IOPS value, if applicable
+            // if not managed, this is the chance for the plug-in to talk to the hypervisor layer
+            // to change the size of the disk
+            AsyncCallFuture<VolumeApiResult> future = volService.resize(vol);
+            VolumeApiResult result = future.get();
 
             // managed storage is designed in such a way that the storage plug-in does not
             // talk to the hypervisor layer; as such, if the storage is managed and the
@@ -1153,13 +1165,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
                 _volsDao.update(volume.getId(), volume);
             }
 
-            // this call to resize has a different impact depending on whether the
-            // underlying primary storage is managed or not
-            // if managed, this is the chance for the plug-in to change IOPS value, if applicable
-            // if not managed, this is the chance for the plug-in to talk to the hypervisor layer
-            // to change the size of the disk
-            AsyncCallFuture<VolumeApiResult> future = volService.resize(vol);
-            VolumeApiResult result = future.get();
+
 
             if (result.isFailed()) {
                 s_logger.warn("Failed to resize the volume " + volume);
@@ -2725,7 +2731,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     }
 
     public Outcome<Volume> resizeVolumeThroughJobQueue(final Long vmId, final long volumeId,
-            final long currentSize, final long newSize, final Long newMinIops, final Long newMaxIops, final Long newServiceOfferingId, final boolean shrinkOk) {
+            final long currentSize, final long newSize, final Long newMinIops, final Long newMaxIops, final Integer newHypervisorSnapshotReserve, final Long newServiceOfferingId, final boolean shrinkOk) {
 
         final CallContext context = CallContext.current();
         final User callingUser = context.getCallingUser();
@@ -2747,7 +2753,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
 
         // save work context info (there are some duplications)
         VmWorkResizeVolume workInfo = new VmWorkResizeVolume(callingUser.getId(), callingAccount.getId(), vm.getId(),
-                VolumeApiServiceImpl.VM_WORK_JOB_HANDLER, volumeId, currentSize, newSize, newMinIops, newMaxIops, newServiceOfferingId, shrinkOk);
+                VolumeApiServiceImpl.VM_WORK_JOB_HANDLER, volumeId, currentSize, newSize, newMinIops, newMaxIops, newHypervisorSnapshotReserve, newServiceOfferingId, shrinkOk);
         workJob.setCmdInfo(VmWorkSerializer.serialize(workInfo));
 
         _jobMgr.submitAsyncJob(workJob, VmWorkConstants.VM_WORK_QUEUE, vm.getId());
@@ -2881,7 +2887,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     @ReflectionUse
     private Pair<JobInfo.Status, String> orchestrateResizeVolume(VmWorkResizeVolume work) throws Exception {
         Volume vol = orchestrateResizeVolume(work.getVolumeId(), work.getCurrentSize(), work.getNewSize(), work.getNewMinIops(), work.getNewMaxIops(),
-                work.getNewServiceOfferingId(), work.isShrinkOk());
+                work.getNewHypervisorSnapshotReserve(), work.getNewServiceOfferingId(), work.isShrinkOk());
         return new Pair<JobInfo.Status, String>(JobInfo.Status.SUCCEEDED,
                 _jobMgr.marshallResultObject(new Long(vol.getId())));
     }

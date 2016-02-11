@@ -59,6 +59,7 @@ import org.apache.cloudstack.storage.command.CommandResult;
 import org.apache.cloudstack.storage.command.CopyCmdAnswer;
 import org.apache.cloudstack.storage.command.DeleteCommand;
 import org.apache.cloudstack.storage.datastore.PrimaryDataStoreProviderManager;
+import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.VolumeDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.VolumeDataStoreVO;
 import org.apache.cloudstack.storage.to.TemplateObjectTO;
@@ -134,6 +135,8 @@ public class VolumeServiceImpl implements VolumeService {
     EndPointSelector _epSelector;
     @Inject
     HostDao _hostDao;
+    @Inject
+    PrimaryDataStoreDao _storagePoolDao;
 
     public VolumeServiceImpl() {
     }
@@ -1330,9 +1333,12 @@ public class VolumeServiceImpl implements VolumeService {
             EndPoint ep = RemoteHostEndPoint.getHypervisorHostEndPoint(destHost);
 
             if (ep != null) {
+
                 VolumeVO volume = volDao.findById(volumeId);
                 PrimaryDataStore primaryDataStore = this.dataStoreMgr.getPrimaryDataStore(volume.getPoolId());
-                ResizeVolumeCommand resizeCmd = new ResizeVolumeCommand(volume.getPath(), new StorageFilerTO(primaryDataStore), volume.getSize(), newSize, true, instanceName);
+                ResizeVolumeCommand resizeCmd = new ResizeVolumeCommand(volume.getPath(), new StorageFilerTO(primaryDataStore),
+                        volume.getSize(), newSize, true, instanceName, primaryDataStore.isManaged(),
+                        volume.get_iScsiName());
 
                 answer = ep.sendMessage(resizeCmd);
             } else {

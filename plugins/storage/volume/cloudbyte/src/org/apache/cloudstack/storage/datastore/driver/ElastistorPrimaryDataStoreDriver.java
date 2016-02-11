@@ -110,7 +110,7 @@ public class ElastistorPrimaryDataStoreDriver extends CloudStackPrimaryDataStore
             String volumeName = volumeInfo.getName();
             Long Iops = volumeInfo.getMaxIops();
             // quota size of the cloudbyte volume will be increased with the given HypervisorSnapshotReserve
-            Long quotaSize = getVolumeSizeIncludingHypervisorSnapshotReserve(volumeInfo, _storagePoolDao.findById(storagePoolId));
+            Long quotaSize = getVolumeSizeIncludingHypervisorSnapshotReserve(volumeInfo);
 
             StoragePoolVO storagePool = _storagePoolDao.findById(dataStore.getId());
             VolumeVO volume = _volumeDao.findById(volumeInfo.getId());
@@ -337,7 +337,7 @@ public class ElastistorPrimaryDataStoreDriver extends CloudStackPrimaryDataStore
     }
 
     @Override
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume) {
         long volumeSize = volume.getSize();
         Integer hypervisorSnapshotReserve = volume.getHypervisorSnapshotReserve();
 

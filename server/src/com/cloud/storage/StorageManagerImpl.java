@@ -1799,7 +1799,7 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
         if (storeDriver instanceof PrimaryDataStoreDriver) {
             PrimaryDataStoreDriver primaryStoreDriver = (PrimaryDataStoreDriver)storeDriver;
 
-            return primaryStoreDriver.getVolumeSizeIncludingHypervisorSnapshotReserve(volume, pool);
+            return primaryStoreDriver.getVolumeSizeIncludingHypervisorSnapshotReserve(volume);
         }
 
         return volume.getSize();

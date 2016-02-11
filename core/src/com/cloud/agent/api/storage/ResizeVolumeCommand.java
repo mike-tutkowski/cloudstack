@@ -30,8 +30,22 @@ public class ResizeVolumeCommand extends Command {
     private Long currentSize;
     private boolean shrinkOk;
 
+    /* For managed storage */
+    private boolean isManaged;
+    private String iscsiName;
+
     protected ResizeVolumeCommand() {
 
+    }
+
+    public ResizeVolumeCommand(String path, StorageFilerTO pool, Long currentSize, Long newSize,
+                               boolean shrinkOk, String vmInstance, boolean isManaged,
+                               String iscsiName) {
+
+
+        this(path, pool, currentSize, newSize, shrinkOk, vmInstance);
+        this.iscsiName = iscsiName;
+        this.isManaged = isManaged;
     }
 
     public ResizeVolumeCommand(String path, StorageFilerTO pool, Long currentSize, Long newSize, boolean shrinkOk, String vmInstance) {
@@ -41,6 +55,7 @@ public class ResizeVolumeCommand extends Command {
         this.currentSize = currentSize;
         this.newSize = newSize;
         this.shrinkOk = shrinkOk;
+        this.isManaged = false;
     }
 
     public String getPath() {
@@ -71,6 +86,14 @@ public class ResizeVolumeCommand extends Command {
         return vmInstance;
     }
 
+    public boolean isManaged() {
+        return isManaged;
+    }
+
+    public String getIscsiName() {
+        return iscsiName;
+    }
+
     /**
      * {@inheritDoc}
      */
@@ -78,5 +101,4 @@ public class ResizeVolumeCommand extends Command {
     public boolean executeInSequence() {
         return false;
     }
-
 }

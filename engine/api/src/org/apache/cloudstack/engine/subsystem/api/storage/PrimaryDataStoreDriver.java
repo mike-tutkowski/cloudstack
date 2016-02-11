@@ -34,7 +34,7 @@ public interface PrimaryDataStoreDriver extends DataStoreDriver {
 
     // intended for managed storage (cloud.storage_pool.managed = true)
     // if not managed, return volume.getSize()
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool storagePool);
+    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume);
 
     // intended for managed storage (cloud.storage_pool.managed = true)
     // if managed storage, return the total number of bytes currently in use for the storage pool in question

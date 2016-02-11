@@ -288,7 +288,7 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
             iops = new Iops(volumeInfo.getMinIops(), volumeInfo.getMaxIops(), getDefaultBurstIops(storagePoolId, volumeInfo.getMaxIops()));
         }
 
-        long volumeSize = getVolumeSizeIncludingHypervisorSnapshotReserve(volumeInfo, _storagePoolDao.findById(storagePoolId));
+        long volumeSize = getVolumeSizeIncludingHypervisorSnapshotReserve(volumeInfo);
 
         long sfVolumeId = SolidFireUtil.createSolidFireVolume(sfConnection, SolidFireUtil.getSolidFireVolumeName(volumeInfo.getName()), sfAccountId,
                 volumeSize, true, getVolumeAttributes(volumeInfo), iops.getMinIops(), iops.getMaxIops(), iops.getBurstIops());
@@ -381,8 +381,19 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
         return usedIops;
     }
 
+    public long getVolumeSizeIncludingHypervisorSnapshotReserve(long volumeSize, Integer hypervisorSnapshotReserve) {
+
+        if (hypervisorSnapshotReserve != null) {
+            hypervisorSnapshotReserve = Math.max(hypervisorSnapshotReserve, s_lowestHypervisorSnapshotReserve);
+
+            volumeSize += volumeSize * (hypervisorSnapshotReserve / 100f);
+        }
+
+        return volumeSize;
+    }
+
     @Override
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume) {
         long volumeSize = volume.getSize();
         Integer hypervisorSnapshotReserve = volume.getHypervisorSnapshotReserve();
 
@@ -945,13 +956,30 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
             SolidFireUtil.SolidFireVolume sfVolume = SolidFireUtil.getSolidFireVolume(sfConnection, sfVolumeId);
 
             verifySufficientIopsForStoragePool(storagePoolId, volumeInfo.getId(), payload.newMinIops);
+            verifySufficientStorageForStoragePool(storagePoolId, volumeInfo.getId(), payload.newSize, payload.newHypervisorSnapshotReserve);
+
+            long sfNewVolumeSize = sfVolume.getTotalSize();
+
+            if (payload.newSize != null || payload.newHypervisorSnapshotReserve != null) {
+               Integer hsr = s_lowestHypervisorSnapshotReserve;
+
+               if (volumeInfo.getHypervisorSnapshotReserve() != null && hsr < volumeInfo.getHypervisorSnapshotReserve()) {
+                   hsr = volumeInfo.getHypervisorSnapshotReserve();
+               }
+
+               if (payload.newHypervisorSnapshotReserve != null && payload.newHypervisorSnapshotReserve > hsr) {
+                   hsr = payload.newHypervisorSnapshotReserve;
+               }
+
+               sfNewVolumeSize = getVolumeSizeIncludingHypervisorSnapshotReserve(payload.newSize, hsr);
+            }
 
             Map<String, String> mapAttributes = new HashMap<>();
 
             mapAttributes.put(SolidFireUtil.CloudStackVolumeId, String.valueOf(volumeInfo.getId()));
             mapAttributes.put(SolidFireUtil.CloudStackVolumeSize, NumberFormat.getInstance().format(payload.newSize));
 
-            SolidFireUtil.modifySolidFireVolume(sfConnection, sfVolumeId, sfVolume.getTotalSize(), mapAttributes,
+            SolidFireUtil.modifySolidFireVolume(sfConnection, sfVolumeId, sfNewVolumeSize, mapAttributes,
                     payload.newMinIops, payload.newMaxIops, getDefaultBurstIops(storagePoolId, payload.newMaxIops));
 
             VolumeVO volume = _volumeDao.findById(volumeInfo.getId());
@@ -965,7 +993,7 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
             // To be backward compatible with releases prior to 4.5, call updateVolumeDetails here.
             // That way if SolidFireUtil.VOLUME_SIZE wasn't put in the volume_details table when the
             // volume was initially created, it can be placed in volume_details if the volume is resized.
-            updateVolumeDetails(volume.getId(), sfVolume.getTotalSize());
+            updateVolumeDetails(volume.getId(), sfNewVolumeSize);
         } else {
             errMsg = "Invalid DataObjectType (" + dataObject.getType() + ") passed to resize";
         }
@@ -992,6 +1020,31 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
             if (usedIops + diffInMinIops > capacityIops) {
                 throw new CloudRuntimeException("Insufficient number of IOPS available in this storage pool");
             }
+        }
+    }
+
+    private void verifySufficientStorageForStoragePool(long storagePoolId, long volumeId, long newSize, Integer newHypervisorSnapshotReserve) {
+
+        StoragePoolVO storagePool = _storagePoolDao.findById(storagePoolId);
+        VolumeVO volume = _volumeDao.findById(volumeId);
+
+        long currentSizeWithHsr = getVolumeSizeIncludingHypervisorSnapshotReserve(volume);
+
+        newHypervisorSnapshotReserve = newHypervisorSnapshotReserve == null ?
+                s_lowestHypervisorSnapshotReserve :
+                Math.max(newHypervisorSnapshotReserve, s_lowestHypervisorSnapshotReserve);
+
+        long newSizeWithHsr = (long) (newSize + newSize * (newHypervisorSnapshotReserve / 100f));
+
+        if (newSizeWithHsr < currentSizeWithHsr) {
+            throw new CloudRuntimeException("Storage " + storagePoolId + " does not support shrinking of volume " + volumeId);
+        }
+
+        //XXX: I'm not sure if we want to check this because SolidFire technically stores de-duped data
+        long availableBytes = storagePool.getCapacityBytes() - storagePool.getUsedBytes();
+
+        if ( (newSizeWithHsr - currentSizeWithHsr) > availableBytes ) {
+            throw new CloudRuntimeException("Storage " + storagePoolId + " does not have enough space for volume " + volumeId);
         }
     }
 
