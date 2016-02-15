@@ -1792,14 +1792,17 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
         return null;
     }
 
-    private long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    private long getVolumeSizeIncludingHypervisorSnapshotReserve(VolumeVO volume, StoragePool pool) {
+
         DataStoreProvider storeProvider = _dataStoreProviderMgr.getDataStoreProvider(pool.getStorageProviderName());
         DataStoreDriver storeDriver = storeProvider.getDataStoreDriver();
 
         if (storeDriver instanceof PrimaryDataStoreDriver) {
-            PrimaryDataStoreDriver primaryStoreDriver = (PrimaryDataStoreDriver)storeDriver;
+            PrimaryDataStoreDriver primaryStoreDriver = (PrimaryDataStoreDriver) storeDriver;
 
-            return primaryStoreDriver.getVolumeSizeIncludingHypervisorSnapshotReserve(volume, pool);
+            VolumeInfo volumeInfo = volFactory.getVolume(volume.getId());
+
+            return primaryStoreDriver.getVolumeSizeIncludingHypervisorSnapshotReserve(volumeInfo, pool);
         }
 
         return volume.getSize();

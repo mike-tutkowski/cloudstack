@@ -37,6 +37,7 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.Queue;
 import java.util.Random;
@@ -4081,6 +4082,14 @@ public abstract class CitrixResourceBase implements ServerResource, HypervisorRe
         VDI vdi = getVDIbyUuid(conn, path, false);
         final Long volumeSize = Long.parseLong(details.get(DiskTO.VOLUME_SIZE));
 
+
+        Set<VDI> vdisInSr = sr.getVDIs(conn);
+
+        //if a VDI already exisits in the SR (in case we cloned from a template cache)
+        //use that
+        if ( vdisInSr.size() == 1 )
+            vdi = vdisInSr.iterator().next();
+
         if (vdi == null) {
             vdi = createVdi(sr, vdiNameLabel, volumeSize);
         } else {
@@ -4099,6 +4108,15 @@ public abstract class CitrixResourceBase implements ServerResource, HypervisorRe
                     vdi.resize(conn, volumeSize);
                 } catch (final Exception e) {
                     s_logger.warn("Unable to resize volume", e);
+                }
+            }
+
+            // change the name-label in case of a cloned VDI
+            if (!Objects.equals(vdi.getNameLabel(conn), vdiNameLabel)) {
+                try {
+                    vdi.setNameLabel(conn, vdiNameLabel);
+                } catch (final Exception e) {
+                    s_logger.warn("Unable to rename volume", e);
                 }
             }
         }

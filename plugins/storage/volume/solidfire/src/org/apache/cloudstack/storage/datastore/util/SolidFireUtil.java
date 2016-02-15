@@ -936,9 +936,6 @@ public class SolidFireUtil {
 
             verifyResult(asyncJobResult.result, strAsyncJobResultJson, gson);
 
-            if (asyncJobResult.result.status.equals("complete")) {
-                break;
-            }
 
             try {
                 Thread.sleep(500); // sleep for 1/2 of a second
@@ -946,6 +943,11 @@ public class SolidFireUtil {
             catch (Exception ex) {
                 // ignore
             }
+
+            if (asyncJobResult.result.status.equals("complete")) {
+                break;
+            }
+
         }
         while (true);
 

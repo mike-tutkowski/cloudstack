@@ -27,6 +27,7 @@ import com.cloud.storage.StoragePool;
 
 public interface TemplateService {
 
+
     class TemplateApiResult extends CommandResult {
         private final TemplateInfo template;
 
@@ -51,6 +52,8 @@ public interface TemplateService {
     AsyncCallFuture<TemplateApiResult> copyTemplate(TemplateInfo srcTemplate, DataStore destStore);
 
     AsyncCallFuture<TemplateApiResult> prepareTemplateOnPrimary(TemplateInfo srcTemplate, StoragePool pool);
+
+    AsyncCallFuture<TemplateApiResult> deleteTemplateOnPrimary(TemplateInfo template, StoragePool pool);
 
     void syncTemplateToRegionStore(long templateId, DataStore store);
 

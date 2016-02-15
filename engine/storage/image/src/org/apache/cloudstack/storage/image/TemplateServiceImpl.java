@@ -24,7 +24,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
 import javax.inject.Inject;
 
 import org.apache.log4j.Logger;
@@ -842,6 +841,24 @@ public class TemplateServiceImpl implements TemplateService {
     @Override
     public AsyncCallFuture<TemplateApiResult> prepareTemplateOnPrimary(TemplateInfo srcTemplate, StoragePool pool) {
         return copyAsync(srcTemplate, srcTemplate, (DataStore)pool);
+    }
+
+    @Override
+    public AsyncCallFuture<TemplateApiResult> deleteTemplateOnPrimary(TemplateInfo template, StoragePool pool) {
+
+        TemplateObject templateObject = (TemplateObject) _templateFactory.getTemplate(template.getId(), (DataStore) pool);
+        templateObject.processEvent(ObjectInDataStoreStateMachine.Event.DestroyRequested);
+        DataStore dataStore = _storeMgr.getPrimaryDataStore(pool.getId());
+
+
+        AsyncCallFuture<TemplateApiResult> future = new AsyncCallFuture<>();
+        TemplateOpContext<TemplateApiResult> context = new TemplateOpContext<>(null,templateObject, future);
+        AsyncCallbackDispatcher<TemplateServiceImpl, CommandResult> caller = AsyncCallbackDispatcher.create(this);
+        caller.setCallback(caller.getTarget().deleteTemplateCallback(null, null)).setContext(context);
+
+        dataStore.getDriver().deleteAsync(dataStore, templateObject, caller);
+
+        return future;
     }
 
     protected Void copyTemplateCallBack(AsyncCallbackDispatcher<TemplateServiceImpl, CopyCommandResult> callback, TemplateOpContext<TemplateApiResult> context) {

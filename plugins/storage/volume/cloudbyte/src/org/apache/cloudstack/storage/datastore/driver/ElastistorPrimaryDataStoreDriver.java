@@ -53,7 +53,6 @@ import com.cloud.storage.ResizeVolumePayload;
 import com.cloud.storage.Storage.StoragePoolType;
 import com.cloud.storage.StorageManager;
 import com.cloud.storage.StoragePool;
-import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeDetailVO;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
@@ -337,7 +336,8 @@ public class ElastistorPrimaryDataStoreDriver extends CloudStackPrimaryDataStore
     }
 
     @Override
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    public long getVolumeSizeIncludingHypervisorSnapshotReserve(DataObject dataObject, StoragePool pool) {
+        VolumeInfo volume = (VolumeInfo) dataObject;
         long volumeSize = volume.getSize();
         Integer hypervisorSnapshotReserve = volume.getHypervisorSnapshotReserve();
 
@@ -353,7 +353,7 @@ public class ElastistorPrimaryDataStoreDriver extends CloudStackPrimaryDataStore
     }
 
     @Override
-    public ChapInfo getChapInfo(VolumeInfo volumeInfo) {
+    public ChapInfo getChapInfo(DataObject dataObject) {
         return null;
     }
 

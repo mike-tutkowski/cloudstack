@@ -26,6 +26,7 @@ import javax.inject.Inject;
 
 import org.apache.cloudstack.engine.subsystem.api.storage.ClusterScope;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataObject;
+import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreCapabilities;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreDriver;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreProvider;
 import org.apache.cloudstack.engine.subsystem.api.storage.HostScope;
@@ -239,10 +240,17 @@ public class PrimaryDataStoreImpl implements PrimaryDataStore {
         return pdsv.isManaged();
     }
 
+    private boolean canCloneVolume(){
+        if(!isManaged())
+            return true;
+
+        return new Boolean(getDriver().getCapabilities().get(DataStoreCapabilities.CAN_CREATE_VOLUME_FROM_VOLUME.toString()));
+    }
+
     @Override
     public DataObject create(DataObject obj) {
         // create template on primary storage
-        if (obj.getType() == DataObjectType.TEMPLATE && !isManaged()) {
+        if (obj.getType() == DataObjectType.TEMPLATE && canCloneVolume()) {
             try {
                 String templateIdPoolIdString = "templateId:" + obj.getId() + "poolId:" + getId();
                 VMTemplateStoragePoolVO templateStoragePoolRef;

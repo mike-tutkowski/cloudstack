@@ -49,7 +49,6 @@ import com.cloud.agent.api.to.DataTO;
 import com.cloud.host.Host;
 import com.cloud.storage.Storage;
 import com.cloud.storage.StoragePool;
-import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.user.dao.AccountDao;
@@ -78,7 +77,7 @@ public class NexentaPrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     }
 
     @Override
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    public long getVolumeSizeIncludingHypervisorSnapshotReserve(DataObject dataObject, StoragePool pool) {
         return 0;  //To change body of implemented methods use File | Settings | File Templates.
     }
 
@@ -97,7 +96,7 @@ public class NexentaPrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     }
 
     @Override
-    public ChapInfo getChapInfo(VolumeInfo volumeInfo) {
+    public ChapInfo getChapInfo(DataObject dataObject) {
         return null;
     }
 

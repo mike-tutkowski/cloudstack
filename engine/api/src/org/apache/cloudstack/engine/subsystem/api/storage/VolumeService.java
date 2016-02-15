@@ -45,7 +45,7 @@ public interface VolumeService {
         }
     }
 
-    ChapInfo getChapInfo(VolumeInfo volumeInfo, DataStore dataStore);
+    ChapInfo getChapInfo(DataObject dataObject, DataStore dataStore);
 
     boolean grantAccess(DataObject dataObject, Host host, DataStore dataStore);
 
