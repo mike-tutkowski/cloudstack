@@ -568,9 +568,10 @@ public class Xenserver625StorageProcessor extends XenServerStorageProcessor {
                     physicalSize = Long.parseLong(tmp[1]);
                     finalPath = folder + File.separator + snapshotBackupUuid + ".vhd";
                 }
+
+                final String volumeUuid = snapshotTO.getVolume().getPath();
+                destroySnapshotOnPrimaryStorageExceptThis(conn, volumeUuid, snapshotUuid);
             }
-            final String volumeUuid = snapshotTO.getVolume().getPath();
-            destroySnapshotOnPrimaryStorageExceptThis(conn, volumeUuid, snapshotUuid);
 
             final SnapshotObjectTO newSnapshot = new SnapshotObjectTO();
             newSnapshot.setPath(finalPath);

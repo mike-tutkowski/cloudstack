@@ -413,6 +413,12 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
                 copyCmdAnswer = (CopyCmdAnswer)_agentMgr.send(hostVO.getId(), copyCommand);
 
+                if (!copyCmdAnswer.getResult()) {
+                    // We were not able to copy, deal with it
+                    errMsg = copyCmdAnswer.getDetails();
+                    throw  new CloudRuntimeException(errMsg);
+                }
+
                 if (needCache) {
                     // If cached storage was needed (in case of object store as secondary
                     // storage), at this point, the data has been copied from the primary
@@ -432,12 +438,13 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
                         copyCmdAnswer = new CopyCmdAnswer(errMsg);
                     } else {
-                        copyCmdAnswer = (CopyCmdAnswer)ep.sendMessage(cmd);
+                        copyCmdAnswer = (CopyCmdAnswer) ep.sendMessage(cmd);
                     }
 
                     // clean up snapshot copied to staging
-                    performCleanupCacheStorage(destOnStore);
+                    cacheMgr.deleteCacheObject(destOnStore);
                 }
+
             } catch (CloudRuntimeException | AgentUnavailableException | OperationTimedoutException ex) {
                 String msg = "Failed to create template from snapshot (Snapshot ID = " + snapshotInfo.getId() + ") : ";
 
@@ -450,6 +457,9 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
                 if (copyCmdAnswer == null || !copyCmdAnswer.getResult()) {
                     if (copyCmdAnswer != null && !StringUtils.isEmpty(copyCmdAnswer.getDetails())) {
                         errMsg = copyCmdAnswer.getDetails();
+                        if(needCache) {
+                            cacheMgr.deleteCacheObject(destOnStore);
+                        }
                     }
                     else {
                         errMsg = "Unable to create template from snapshot";
@@ -540,34 +550,6 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
         result.setResult(errMsg);
 
         callback.complete(result);
-    }
-
-    private void performCleanupCacheStorage(DataObject destOnStore) {
-        destOnStore.processEvent(Event.DestroyRequested);
-
-        DeleteCommand deleteCommand = new DeleteCommand(destOnStore.getTO());
-        EndPoint ep = selector.select(destOnStore);
-        try {
-            if (ep == null) {
-                LOGGER.warn("Unable to cleanup staging NFS because no endpoint was found " +
-                "Object: " + destOnStore.getType() + " ID: " + destOnStore.getId());
-
-                destOnStore.processEvent(Event.OperationFailed);
-            } else {
-                Answer deleteAnswer = ep.sendMessage(deleteCommand);
-                if (deleteAnswer != null && deleteAnswer.getResult()) {
-                    LOGGER.warn("Unable to cleanup staging NFS " + deleteAnswer.getDetails() +
-                    "Object: " + destOnStore.getType() + " ID: " + destOnStore.getId());
-                    destOnStore.processEvent(Event.OperationFailed);
-                }
-            }
-
-            destOnStore.processEvent(Event.OperationSuccessed);
-        } catch (Exception e) {
-            destOnStore.processEvent(Event.OperationFailed);
-            LOGGER.warn("Unable to clean up staging cache Exception " + e.getMessage() +
-                    "Object: " + destOnStore.getType() + " ID: " + destOnStore.getId());
-        }
     }
 
     /**
@@ -1061,7 +1043,7 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             _volumeService.revokeAccess(volumeInfo, hostVO, volumeInfo.getDataStore());
 
             if (needCacheStorage && copyCmdAnswer != null && copyCmdAnswer.getResult()) {
-                performCleanupCacheStorage(cacheData);
+                cacheMgr.deleteCacheObject(cacheData);
             }
         }
 
