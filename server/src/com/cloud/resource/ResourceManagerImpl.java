@@ -767,6 +767,9 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
                                     _hostTagsDao.persist(host.getId(), hostTags);
                                 }
                                 hosts.add(host);
+
+                                _agentMgr.notifyMonitorsOfNewlyAddedHost(host.getId());
+
                                 return hosts;
                             }
                         }
@@ -839,9 +842,13 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
             return true;
         }
 
+        long clusterId = host.getClusterId();
+
+        _agentMgr.notifyMonitorsOfHostAboutToBeRemoved(host.getId());
+
         Transaction.execute(new TransactionCallbackNoReturn() {
             @Override
-            public void doInTransactionWithoutResult(TransactionStatus status) {
+            public void doInTransactionWithoutResult(final TransactionStatus status) {
 
         _dcDao.releasePrivateIpAddress(host.getPrivateIpAddress(), host.getDataCenterId(), null);
         _agentMgr.disconnectWithoutInvestigation(hostId, Status.Event.Remove);
@@ -915,6 +922,8 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
         }
             }
         });
+
+        _agentMgr.notifyMonitorsOfRemovedHost(host.getId(), clusterId);
 
         return true;
     }
@@ -1566,17 +1575,35 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
         return true;
     }
 
-    protected HostVO createHostVO(StartupCommand[] cmds, ServerResource resource, Map<String, String> details, List<String> hostTags,
-        ResourceStateAdapter.Event stateEvent) {
-        StartupCommand startup = cmds[0];
-        HostVO host = findHostByGuid(startup.getGuid());
-        boolean isNew = false;
-        if (host == null) {
-            host = findHostByGuid(startup.getGuidWithoutResource());
+    private HostVO getNewHost(StartupCommand[] startupCommands) {
+        StartupCommand startupCommand = startupCommands[0];
+
+        HostVO host = findHostByGuid(startupCommand.getGuid());
+
+        if (host != null) {
+            return host;
         }
+
+        host = findHostByGuid(startupCommand.getGuidWithoutResource());
+
+        if (host != null) {
+            return host;
+        }
+
+        return null;
+    }
+
+    protected HostVO createHostVO(final StartupCommand[] cmds, final ServerResource resource, final Map<String, String> details, List<String> hostTags,
+            final ResourceStateAdapter.Event stateEvent) {
+        boolean newHost = false;
+        StartupCommand startup = cmds[0];
+
+        HostVO host = getNewHost(cmds);
+
         if (host == null) {
             host = new HostVO(startup.getGuid());
-            isNew = true;
+
+            newHost = true;
         }
 
         String dataCenter = startup.getDataCenter();
@@ -1690,7 +1717,7 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
             throw new CloudRuntimeException("No resource state adapter response");
         }
 
-        if (isNew) {
+        if (newHost) {
             host = _hostDao.persist(host);
         } else {
             _hostDao.update(host.getId(), host);
@@ -1789,9 +1816,13 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
                 }
             }
 
+            // find out if the host we want to connect to is new (so we can send an event)
+            boolean newHost = getNewHost(cmds) == null;
+
             host = createHostVO(cmds, resource, details, hostTags, ResourceStateAdapter.Event.CREATE_HOST_VO_FOR_DIRECT_CONNECT);
+
             if (host != null) {
-                created = _agentMgr.handleDirectConnectAgent(host, cmds, resource, forRebalance);
+                created = _agentMgr.handleDirectConnectAgent(host, cmds, resource, forRebalance, newHost);
                 /* reload myself from database */
                 host = _hostDao.findById(host.getId());
             }
@@ -1861,12 +1892,19 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
             }
 
             host = null;
-            GlobalLock addHostLock = GlobalLock.getInternLock("AddHostLock");
+            boolean newHost = false;
+
+            final GlobalLock addHostLock = GlobalLock.getInternLock("AddHostLock");
+
             try {
                 if (addHostLock.lock(ACQUIRE_GLOBAL_LOCK_TIMEOUT_FOR_COOPERATION)) {
                     // to safely determine first host in cluster in multi-MS scenario
                     try {
+                        // find out if the host we want to connect to is new (so we can send an event)
+                        newHost = getNewHost(cmds) == null;
+
                         host = createHostVO(cmds, resource, details, hostTags, ResourceStateAdapter.Event.CREATE_HOST_VO_FOR_DIRECT_CONNECT);
+
                         if (host != null) {
                             // if first host in cluster no need to defer agent creation
                             deferAgentCreation = !isFirstHostInCluster(host);
@@ -1881,7 +1919,7 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
 
             if (host != null) {
                 if (!deferAgentCreation) { // if first host in cluster then
-                    created = _agentMgr.handleDirectConnectAgent(host, cmds, resource, forRebalance);
+                    created = _agentMgr.handleDirectConnectAgent(host, cmds, resource, forRebalance, newHost);
                     host = _hostDao.findById(host.getId()); // reload
                 } else {
                     host = _hostDao.findById(host.getId()); // reload

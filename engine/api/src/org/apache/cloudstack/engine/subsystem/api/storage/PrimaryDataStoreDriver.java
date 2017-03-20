@@ -23,25 +23,26 @@ import org.apache.cloudstack.storage.command.CommandResult;
 
 import com.cloud.host.Host;
 import com.cloud.storage.StoragePool;
-import com.cloud.storage.Volume;
 
 public interface PrimaryDataStoreDriver extends DataStoreDriver {
-    public ChapInfo getChapInfo(VolumeInfo volumeInfo);
+    ChapInfo getChapInfo(DataObject dataObject);
 
-    public boolean connectVolumeToHost(VolumeInfo volumeInfo, Host host, DataStore dataStore);
+    boolean connectVolumeToHost(DataObject dataObject, Host host, DataStore dataStore);
 
-    public void disconnectVolumeFromHost(VolumeInfo volumeInfo, Host host, DataStore dataStore);
+    void disconnectVolumeFromHost(DataObject dataObject, Host host, DataStore dataStore);
 
-    // intended for managed storage (cloud.storage_pool.managed = true)
-    // if not managed, return volume.getSize()
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool storagePool);
+    /**
+     * intended for managed storage (cloud.storage_pool.managed = true)
+     * if not managed, return volume.getSize()
+     */
+    long getDataObjectSizeIncludingHypervisorSnapshotReserve(DataObject dataObject, StoragePool storagePool);
 
     // intended for managed storage (cloud.storage_pool.managed = true)
     // if managed storage, return the total number of bytes currently in use for the storage pool in question
     // if not managed storage, return 0
-    public long getUsedBytes(StoragePool storagePool);
+    long getUsedBytes(StoragePool storagePool);
 
-    public void takeSnapshot(SnapshotInfo snapshot, AsyncCompletionCallback<CreateCmdResult> callback);
+    void takeSnapshot(SnapshotInfo snapshot, AsyncCompletionCallback<CreateCmdResult> callback);
 
-    public void revertSnapshot(SnapshotInfo snapshot, AsyncCompletionCallback<CommandResult> callback);
+    void revertSnapshot(SnapshotInfo snapshot, AsyncCompletionCallback<CommandResult> callback);
 }

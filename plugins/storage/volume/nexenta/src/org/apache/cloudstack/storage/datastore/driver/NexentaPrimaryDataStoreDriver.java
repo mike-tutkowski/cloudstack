@@ -49,7 +49,6 @@ import com.cloud.agent.api.to.DataTO;
 import com.cloud.host.Host;
 import com.cloud.storage.Storage;
 import com.cloud.storage.StoragePool;
-import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.user.dao.AccountDao;
@@ -58,12 +57,12 @@ public class NexentaPrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     private static final Logger logger = Logger.getLogger(NexentaPrimaryDataStoreDriver.class);
 
     @Override
-    public boolean connectVolumeToHost(VolumeInfo volumeInfo, Host host, DataStore dataStore) {
+    public boolean connectVolumeToHost(DataObject dataObject, Host host, DataStore dataStore) {
         return false;  //To change body of implemented methods use File | Settings | File Templates.
     }
 
     @Override
-    public void disconnectVolumeFromHost(VolumeInfo volumeInfo, Host host, DataStore dataStore) {
+    public void disconnectVolumeFromHost(DataObject dataObject, Host host, DataStore dataStore) {
         //To change body of implemented methods use File | Settings | File Templates.
     }
 
@@ -73,7 +72,7 @@ public class NexentaPrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     }
 
     @Override
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    public long getDataObjectSizeIncludingHypervisorSnapshotReserve(DataObject dataObject, StoragePool pool) {
         return 0;  //To change body of implemented methods use File | Settings | File Templates.
     }
 
@@ -92,7 +91,7 @@ public class NexentaPrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     }
 
     @Override
-    public ChapInfo getChapInfo(VolumeInfo volumeInfo) {
+    public ChapInfo getChapInfo(DataObject dataObject) {
         return null;
     }
 

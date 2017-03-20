@@ -97,7 +97,7 @@ public class SnapshotVO implements Snapshot {
     }
 
     public SnapshotVO(long dcId, long accountId, long domainId, Long volumeId, Long diskOfferingId, String name, short snapshotType, String typeDescription, long size,
-            HypervisorType hypervisorType) {
+                      HypervisorType hypervisorType) {
         dataCenterId = dcId;
         this.accountId = accountId;
         this.domainId = domainId;

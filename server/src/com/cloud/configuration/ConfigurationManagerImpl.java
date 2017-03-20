@@ -2057,6 +2057,9 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         String vmTypeString = cmd.getSystemVmType();
         VirtualMachine.Type vmType = null;
         boolean allowNetworkRate = false;
+
+        Boolean isCustomizedIops;
+
         if (cmd.getIsSystem()) {
             if (vmTypeString == null || VirtualMachine.Type.DomainRouter.toString().toLowerCase().equals(vmTypeString)) {
                 vmType = VirtualMachine.Type.DomainRouter;
@@ -2071,8 +2074,19 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
                 throw new InvalidParameterValueException("Invalid systemVmType. Supported types are: " + VirtualMachine.Type.DomainRouter + ", " + VirtualMachine.Type.ConsoleProxy
                         + ", " + VirtualMachine.Type.SecondaryStorageVm);
             }
+
+            if (cmd.isCustomizedIops() != null) {
+                throw new InvalidParameterValueException("Customized IOPS is not a valid parameter for a system VM.");
+            }
+
+            isCustomizedIops = false;
+
+            if (cmd.getHypervisorSnapshotReserve() != null) {
+                throw new InvalidParameterValueException("Hypervisor snapshot reserve is not a valid parameter for a system VM.");
+            }
         } else {
             allowNetworkRate = true;
+            isCustomizedIops = cmd.isCustomizedIops();
         }
 
         if (cmd.getNetworkRate() != null) {
@@ -2097,7 +2111,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
 
         return createServiceOffering(userId, cmd.getIsSystem(), vmType, cmd.getServiceOfferingName(), cpuNumber, memory, cpuSpeed, cmd.getDisplayText(),
                 cmd.getProvisioningType(), localStorageRequired, offerHA, limitCpuUse, volatileVm, cmd.getTags(), cmd.getDomainId(), cmd.getHostTag(),
-                cmd.getNetworkRate(), cmd.getDeploymentPlanner(), cmd.getDetails(), cmd.isCustomizedIops(), cmd.getMinIops(), cmd.getMaxIops(),
+                cmd.getNetworkRate(), cmd.getDeploymentPlanner(), cmd.getDetails(), isCustomizedIops, cmd.getMinIops(), cmd.getMaxIops(),
                 cmd.getBytesReadRate(), cmd.getBytesWriteRate(), cmd.getIopsReadRate(), cmd.getIopsWriteRate(), cmd.getHypervisorSnapshotReserve());
     }
 

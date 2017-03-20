@@ -44,15 +44,15 @@ public class FakePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     boolean snapshotResult = true;
 
     @Override
-    public ChapInfo getChapInfo(VolumeInfo volumeInfo) {
+    public ChapInfo getChapInfo(DataObject dataObject) {
         return null; // To change body of implemented methods, use File | Settings | File Templates.
     }
 
     @Override
-    public boolean  connectVolumeToHost(VolumeInfo volumeInfo, Host host, DataStore dataStore) { return false; }
+    public boolean  connectVolumeToHost(DataObject dataObject, Host host, DataStore dataStore) { return false; }
 
     @Override
-    public void disconnectVolumeFromHost(VolumeInfo volumeInfo, Host host, DataStore dataStore) {}
+    public void disconnectVolumeFromHost(DataObject dataObject, Host host, DataStore dataStore) {}
 
     @Override
     public long getUsedBytes(StoragePool storagePool) {
@@ -60,7 +60,7 @@ public class FakePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     }
 
     @Override
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    public long getDataObjectSizeIncludingHypervisorSnapshotReserve(DataObject dataObject, StoragePool pool) {
         return volume.getSize();
     }
 

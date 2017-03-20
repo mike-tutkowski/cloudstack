@@ -138,6 +138,9 @@ import org.apache.cloudstack.api.response.VpnUsersResponse;
 import org.apache.cloudstack.api.response.ZoneResponse;
 import org.apache.cloudstack.config.Configuration;
 import org.apache.cloudstack.context.CallContext;
+import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
+import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreCapabilities;
+import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotInfo;
 import org.apache.cloudstack.framework.jobs.AsyncJob;
@@ -146,6 +149,8 @@ import org.apache.cloudstack.network.lb.ApplicationLoadBalancerRule;
 import org.apache.cloudstack.region.PortableIp;
 import org.apache.cloudstack.region.PortableIpRange;
 import org.apache.cloudstack.region.Region;
+import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreVO;
 import org.apache.cloudstack.usage.Usage;
 import org.apache.cloudstack.usage.UsageService;
 import org.apache.cloudstack.usage.UsageTypes;
@@ -322,6 +327,10 @@ public class ApiResponseHelper implements ResponseGenerator {
     ConfigurationManager _configMgr;
     @Inject
     SnapshotDataFactory snapshotfactory;
+    @Inject
+    private DataStoreManager dataStoreMgr;
+    @Inject
+    private SnapshotDataStoreDao snapshotStoreDao;
 
     @Override
     public UserResponse createUserResponse(User user) {
@@ -463,10 +472,13 @@ public class ApiResponseHelper implements ResponseGenerator {
         snapshotResponse.setState(snapshot.getState());
 
         SnapshotInfo snapshotInfo = null;
-        if (!(snapshot instanceof SnapshotInfo)) {
-            snapshotInfo = snapshotfactory.getSnapshot(snapshot.getId(), DataStoreRole.Image);
-        } else {
+
+        if (snapshot instanceof SnapshotInfo) {
             snapshotInfo = (SnapshotInfo)snapshot;
+        } else {
+            DataStoreRole dataStoreRole = getDataStoreRole(snapshot, snapshotStoreDao, dataStoreMgr);
+
+            snapshotInfo = snapshotfactory.getSnapshot(snapshot.getId(), dataStoreRole);
         }
 
         if (snapshotInfo == null) {
@@ -488,6 +500,30 @@ public class ApiResponseHelper implements ResponseGenerator {
 
         snapshotResponse.setObjectName("snapshot");
         return snapshotResponse;
+    }
+
+    public static DataStoreRole getDataStoreRole(Snapshot snapshot, SnapshotDataStoreDao snapshotStoreDao, DataStoreManager dataStoreMgr) {
+        SnapshotDataStoreVO snapshotStore = snapshotStoreDao.findBySnapshot(snapshot.getId(), DataStoreRole.Primary);
+
+        if (snapshotStore == null) {
+            return DataStoreRole.Image;
+        }
+
+        long storagePoolId = snapshotStore.getDataStoreId();
+        DataStore dataStore = dataStoreMgr.getDataStore(storagePoolId, DataStoreRole.Primary);
+
+        Map<String, String> mapCapabilities = dataStore.getDriver().getCapabilities();
+
+        if (mapCapabilities != null) {
+            String value = mapCapabilities.get(DataStoreCapabilities.STORAGE_SYSTEM_SNAPSHOT.toString());
+            Boolean supportsStorageSystemSnapshots = new Boolean(value);
+
+            if (supportsStorageSystemSnapshots) {
+                return DataStoreRole.Primary;
+            }
+        }
+
+        return DataStoreRole.Image;
     }
 
     @Override

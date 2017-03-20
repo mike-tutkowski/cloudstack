@@ -39,6 +39,8 @@ import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreDriver;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreProvider;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreProviderManager;
 import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStoreDriver;
+import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
+import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
 import org.springframework.stereotype.Component;
 
 import com.cloud.dc.ClusterDetailsDao;
@@ -60,6 +62,7 @@ public class ApiSolidFireServiceImpl extends AdapterBase implements APIChecker, 
     @Inject private AccountDetailsDao _accountDetailsDao;
     @Inject private DataStoreProviderManager _dataStoreProviderMgr;
     @Inject private ClusterDetailsDao _clusterDetailsDao;
+    @Inject private VolumeDataFactory _volFactory;
 
     @Override
     public boolean configure(String name, Map<String, Object> params) throws ConfigurationException {
@@ -78,21 +81,21 @@ public class ApiSolidFireServiceImpl extends AdapterBase implements APIChecker, 
 
     @Override
     public ApiSolidFireVolumeSizeResponse getSolidFireVolumeSize(Volume volume, StoragePool storagePool) {
-        PrimaryDataStoreDriver primaryStoreDriver = null;
+        PrimaryDataStoreDriver primaryStoreDriver;
 
-        try {
-            DataStoreProvider storeProvider = _dataStoreProviderMgr.getDataStoreProvider(storagePool.getStorageProviderName());
-            DataStoreDriver storeDriver = storeProvider.getDataStoreDriver();
+        DataStoreProvider storeProvider = _dataStoreProviderMgr.getDataStoreProvider(storagePool.getStorageProviderName());
+        DataStoreDriver storeDriver = storeProvider.getDataStoreDriver();
 
-            if (storeDriver instanceof PrimaryDataStoreDriver) {
-                primaryStoreDriver = (PrimaryDataStoreDriver)storeDriver;
-            }
+        if (storeDriver instanceof PrimaryDataStoreDriver) {
+            primaryStoreDriver = (PrimaryDataStoreDriver)storeDriver;
         }
-        catch (InvalidParameterValueException e) {
+        else {
             throw new InvalidParameterValueException("Invalid Storage Driver Type");
         }
 
-        return new ApiSolidFireVolumeSizeResponse(primaryStoreDriver.getVolumeSizeIncludingHypervisorSnapshotReserve(volume, storagePool));
+        VolumeInfo volumeInfo = _volFactory.getVolume(volume.getId());
+
+        return new ApiSolidFireVolumeSizeResponse(primaryStoreDriver.getDataObjectSizeIncludingHypervisorSnapshotReserve(volumeInfo, storagePool));
     }
 
     @Override

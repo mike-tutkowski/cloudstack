@@ -341,7 +341,7 @@ public class SnapshotTest extends CloudStackTestNGBase {
         Snapshot.Type snapshotType = Snapshot.Type.MANUAL;
         SnapshotVO snapshotVO =
             new SnapshotVO(volume.getDataCenterId(), 2, 1, volume.getId(), 1L, UUID.randomUUID().toString(), (short)snapshotType.ordinal(), snapshotType.name(),
-                volume.getSize(), HypervisorType.XenServer);
+                    volume.getSize(), volume.getMinIops(), volume.getMaxIops(), HypervisorType.XenServer);
         return this.snapshotDao.persist(snapshotVO);
     }
 

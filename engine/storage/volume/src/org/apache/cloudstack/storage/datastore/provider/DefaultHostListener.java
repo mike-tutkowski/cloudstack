@@ -52,6 +52,11 @@ public class DefaultHostListener implements HypervisorHostListener {
     PrimaryDataStoreDao primaryStoreDao;
 
     @Override
+    public boolean hostAdded(long hostId) {
+        return true;
+    }
+
+    @Override
     public boolean hostConnect(long hostId, long poolId) {
         StoragePool pool = (StoragePool)this.dataStoreMgr.getDataStore(poolId, DataStoreRole.Primary);
         ModifyStoragePoolCommand cmd = new ModifyStoragePoolCommand(true, pool);
@@ -95,4 +100,13 @@ public class DefaultHostListener implements HypervisorHostListener {
         return false;
     }
 
+    @Override
+    public boolean hostAboutToBeRemoved(long hostId) {
+        return true;
+    }
+
+    @Override
+    public boolean hostRemoved(long hostId, long clusterId) {
+        return true;
+    }
 }

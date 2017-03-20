@@ -57,6 +57,7 @@ import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
 import org.apache.cloudstack.engine.subsystem.api.storage.EndPoint;
 import org.apache.cloudstack.engine.subsystem.api.storage.EndPointSelector;
+import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.Scope;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotInfo;
@@ -79,6 +80,7 @@ import org.apache.cloudstack.storage.command.AttachCommand;
 import org.apache.cloudstack.storage.command.CommandResult;
 import org.apache.cloudstack.storage.command.DettachCommand;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.storage.datastore.db.TemplateDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.TemplateDataStoreVO;
@@ -94,6 +96,7 @@ import com.cloud.agent.api.to.DataTO;
 import com.cloud.agent.api.to.DiskTO;
 import com.cloud.agent.api.to.NfsTO;
 import com.cloud.api.ApiDBUtils;
+import com.cloud.api.ApiResponseHelper;
 import com.cloud.api.query.dao.UserVmJoinDao;
 import com.cloud.api.query.vo.UserVmJoinVO;
 import com.cloud.configuration.Config;
@@ -244,6 +247,8 @@ public class TemplateManagerImpl extends ManagerBase implements TemplateManager,
     private EndPointSelector _epSelector;
     @Inject
     private UserVmJoinDao _userVmJoinDao;
+    @Inject
+    private SnapshotDataStoreDao _snapshotStoreDao;
 
     @Inject
     MessageBus _messageBus;
@@ -795,33 +800,45 @@ public class TemplateManagerImpl extends ManagerBase implements TemplateManager,
             return;
         }
 
-        try {
-            StoragePool pool = (StoragePool)_dataStoreMgr.getPrimaryDataStore(templatePoolVO.getPoolId());
-            VMTemplateVO template = _tmpltDao.findByIdIncludingRemoved(templatePoolVO.getTemplateId());
+        PrimaryDataStore pool = (PrimaryDataStore)_dataStoreMgr.getPrimaryDataStore(templatePoolVO.getPoolId());
+        TemplateInfo template = _tmplFactory.getTemplate(templatePoolRef.getTemplateId(), pool);
 
+        try {
             if (s_logger.isDebugEnabled()) {
                 s_logger.debug("Evicting " + templatePoolVO);
             }
-            DestroyCommand cmd = new DestroyCommand(pool, templatePoolVO);
 
-            try {
+            if (pool.isManaged()) {
+                // For managed store, just delete the template volume.
+                AsyncCallFuture<TemplateApiResult> future = _tmpltSvr.deleteTemplateOnPrimary(template, pool);
+                TemplateApiResult result = future.get();
+
+                if (result.isFailed()) {
+                    s_logger.debug("Failed to delete template " + template.getId() + " from storage pool " + pool.getId());
+                } else {
+                    // Remove the templatePoolVO.
+                    if (_tmpltPoolDao.remove(templatePoolVO.getId())) {
+                        s_logger.debug("Successfully evicted template " + template.getName() + " from storage pool " + pool.getName());
+                    }
+                }
+            } else {
+                DestroyCommand cmd = new DestroyCommand(pool, templatePoolVO);
                 Answer answer = _storageMgr.sendToPool(pool, cmd);
 
                 if (answer != null && answer.getResult()) {
-                    // Remove the templatePoolVO
+                    // Remove the templatePoolVO.
                     if (_tmpltPoolDao.remove(templatePoolVO.getId())) {
-                        s_logger.debug("Successfully evicted template: " + template.getName() + " from storage pool: " + pool.getName());
+                        s_logger.debug("Successfully evicted template " + template.getName() + " from storage pool " + pool.getName());
                     }
                 } else {
-                    s_logger.info("Will retry evicte template: " + template.getName() + " from storage pool: " + pool.getName());
+                    s_logger.info("Will retry evict template " + template.getName() + " from storage pool " + pool.getName());
                 }
-            } catch (StorageUnavailableException e) {
-                s_logger.info("Storage is unavailable currently.  Will retry evicte template: " + template.getName() + " from storage pool: " + pool.getName());
             }
+        } catch (StorageUnavailableException | InterruptedException | ExecutionException e) {
+            s_logger.info("Storage is unavailable currently. Will retry evicte template " + template.getName() + " from storage pool " + pool.getName());
         } finally {
             _tmpltPoolDao.releaseFromLockTable(templatePoolRef.getId());
         }
-
     }
 
     @Override
@@ -1375,11 +1392,18 @@ public class TemplateManagerImpl extends ManagerBase implements TemplateManager,
             }
             AsyncCallFuture<TemplateApiResult> future = null;
             if (snapshotId != null) {
-                SnapshotInfo snapInfo = _snapshotFactory.getSnapshot(snapshotId, DataStoreRole.Image);
-                DataStore snapStore = snapInfo.getDataStore();
-                if (snapStore != null) {
-                    store = snapStore; // pick snapshot image store to create template
+                DataStoreRole dataStoreRole = ApiResponseHelper.getDataStoreRole(snapshot, _snapshotStoreDao, _dataStoreMgr);
+
+                SnapshotInfo snapInfo = _snapshotFactory.getSnapshot(snapshotId, dataStoreRole);
+
+                if (dataStoreRole == DataStoreRole.Image) {
+                    DataStore snapStore = snapInfo.getDataStore();
+
+                    if (snapStore != null) {
+                        store = snapStore; // pick snapshot image store to create template
+                    }
                 }
+
                 future = _tmpltSvr.createTemplateFromSnapshotAsync(snapInfo, tmplInfo, store);
             } else if (volumeId != null) {
                 VolumeInfo volInfo = _volFactory.getVolume(volumeId);
