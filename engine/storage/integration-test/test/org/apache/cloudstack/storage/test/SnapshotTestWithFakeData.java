@@ -206,7 +206,7 @@ public class SnapshotTestWithFakeData {
     private SnapshotVO createSnapshotInDb() {
         Snapshot.Type snapshotType = Snapshot.Type.RECURRING;
         SnapshotVO snapshotVO =
-            new SnapshotVO(dcId, 2, 1, 1L, 1L, UUID.randomUUID().toString(), (short)snapshotType.ordinal(), snapshotType.name(), 100, Hypervisor.HypervisorType.XenServer);
+            new SnapshotVO(dcId, 2, 1, 1L, 1L, UUID.randomUUID().toString(), (short)snapshotType.ordinal(), snapshotType.name(), 100, null, null, Hypervisor.HypervisorType.XenServer);
         return snapshotDao.persist(snapshotVO);
     }
 
@@ -214,7 +214,7 @@ public class SnapshotTestWithFakeData {
         Snapshot.Type snapshotType = Snapshot.Type.DAILY;
         SnapshotVO snapshotVO =
             new SnapshotVO(dcId, 2, 1, volumeId, 1L, UUID.randomUUID().toString(), (short)snapshotType.ordinal(), snapshotType.name(), 100,
-                Hypervisor.HypervisorType.XenServer);
+                null, null, Hypervisor.HypervisorType.XenServer);
         return snapshotDao.persist(snapshotVO);
     }
 

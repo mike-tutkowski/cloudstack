@@ -36,6 +36,7 @@ import org.apache.cloudstack.engine.subsystem.api.storage.CreateCmdResult;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataMotionService;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataObject;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
+import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreCapabilities;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreDriver;
 import org.apache.cloudstack.engine.subsystem.api.storage.EndPoint;
 import org.apache.cloudstack.engine.subsystem.api.storage.EndPointSelector;
@@ -81,6 +82,7 @@ import com.cloud.exception.ConcurrentOperationException;
 import com.cloud.exception.ResourceAllocationException;
 import com.cloud.host.Host;
 import com.cloud.host.dao.HostDao;
+import com.cloud.hypervisor.Hypervisor;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.ScopeType;
@@ -160,11 +162,11 @@ public class VolumeServiceImpl implements VolumeService {
     }
 
     @Override
-    public ChapInfo getChapInfo(VolumeInfo volumeInfo, DataStore dataStore) {
+    public ChapInfo getChapInfo(DataObject dataObject, DataStore dataStore) {
         DataStoreDriver dataStoreDriver = dataStore.getDriver();
 
         if (dataStoreDriver instanceof PrimaryDataStoreDriver) {
-            return ((PrimaryDataStoreDriver)dataStoreDriver).getChapInfo(volumeInfo);
+            return ((PrimaryDataStoreDriver)dataStoreDriver).getChapInfo(dataObject);
         }
 
         return null;
@@ -657,46 +659,95 @@ public class VolumeServiceImpl implements VolumeService {
     public AsyncCallFuture<VolumeApiResult> createManagedStorageAndVolumeFromTemplateAsync(VolumeInfo volumeInfo, long destDataStoreId,
             TemplateInfo srcTemplateInfo, long destHostId) {
         PrimaryDataStore destPrimaryDataStore = dataStoreMgr.getPrimaryDataStore(destDataStoreId);
-        TemplateInfo destTemplateInfo = (TemplateInfo)destPrimaryDataStore.create(srcTemplateInfo);
         Host destHost = _hostDao.findById(destHostId);
 
         if (destHost == null) {
-            throw new CloudRuntimeException("Destinatin host should not be null.");
+            throw new CloudRuntimeException("Destination host should not be null.");
         }
+
+        Boolean storageCanCloneVolume = new Boolean(
+                destPrimaryDataStore.getDriver().getCapabilities().get(DataStoreCapabilities.CAN_CREATE_VOLUME_FROM_VOLUME.toString())
+        );
+
+        // only supported for KVM in this release
+        boolean applicableHypervisorType = destHost.getHypervisorType() == Hypervisor.HypervisorType.KVM;
 
         AsyncCallFuture<VolumeApiResult> future = new AsyncCallFuture<VolumeApiResult>();
 
-        try {
-            // must call driver to have a volume created
-            AsyncCallFuture<VolumeApiResult> createVolumeFuture = createVolumeAsync(volumeInfo, destPrimaryDataStore);
+        if (storageCanCloneVolume && applicableHypervisorType) {
+            s_logger.debug("Primary storage does support cloning and dealing with applicable hypervisor type");
 
+            TemplateInfo templateOnPrimary = destPrimaryDataStore.getTemplate(srcTemplateInfo.getId());
+
+            if (templateOnPrimary == null) {
+                templateOnPrimary = createManagedTemplateVolume(srcTemplateInfo, destPrimaryDataStore);
+
+                if (templateOnPrimary == null) {
+                    throw new CloudRuntimeException("Failed to create template " + srcTemplateInfo.getUniqueName() + " on primary storage: " + destDataStoreId);
+                }
+            }
+
+            // Copy the template to the template volume.
+            VMTemplateStoragePoolVO templatePoolRef = _tmpltPoolDao.findByPoolTemplate(destPrimaryDataStore.getId(), templateOnPrimary.getId());
+
+            if (templatePoolRef == null) {
+                throw new CloudRuntimeException("Failed to find template " +
+                        srcTemplateInfo.getUniqueName() + " in storage pool " +
+                        destPrimaryDataStore.getId()
+                );
+            }
+
+            if (templatePoolRef.getDownloadState() == Status.NOT_DOWNLOADED) {
+                copyTemplateToManagedTemplateVolume(srcTemplateInfo, templateOnPrimary, templatePoolRef, destPrimaryDataStore, destHost);
+            }
+
+            // We have a template on primary storage. Clone it to new volume.
+            s_logger.debug("Creating a clone from template on primary storage " + destDataStoreId);
+            createManagedVolumeCloneTemplateAsync(volumeInfo, templateOnPrimary, destPrimaryDataStore, future);
+        } else {
+            s_logger.debug("Primary storage does not support cloning and/or not dealing with applicable hypervisor type");
+            createManagedVolumeCopyTemplateAsync(volumeInfo, destPrimaryDataStore, srcTemplateInfo, destHost, future);
+        }
+
+        return future;
+    }
+
+    private void createManagedVolumeCopyTemplateAsync(VolumeInfo volumeInfo, PrimaryDataStore primaryDataStore, TemplateInfo srcTemplateInfo, Host destHost,
+                                                      AsyncCallFuture<VolumeApiResult> future) {
+        try {
+            // Create a volume on managed storage.
+
+            TemplateInfo destTemplateInfo = (TemplateInfo)primaryDataStore.create(srcTemplateInfo, false);
+
+            AsyncCallFuture<VolumeApiResult> createVolumeFuture = createVolumeAsync(volumeInfo, primaryDataStore);
             VolumeApiResult createVolumeResult = createVolumeFuture.get();
 
             if (createVolumeResult.isFailed()) {
                 throw new CloudRuntimeException("Creation of a volume failed: " + createVolumeResult.getResult());
             }
 
-            // refresh the volume from the DB
-            volumeInfo = volFactory.getVolume(volumeInfo.getId(), destPrimaryDataStore);
+            // Refresh the volume info from the DB.
+            volumeInfo = volFactory.getVolume(volumeInfo.getId(), primaryDataStore);
 
-            grantAccess(volumeInfo, destHost, destPrimaryDataStore);
+            grantAccess(volumeInfo, destHost, primaryDataStore);
 
             ManagedCreateBaseImageContext<CreateCmdResult> context = new ManagedCreateBaseImageContext<CreateCmdResult>(null, volumeInfo,
-                    destPrimaryDataStore, srcTemplateInfo, future);
+                    primaryDataStore, srcTemplateInfo, future);
             AsyncCallbackDispatcher<VolumeServiceImpl, CopyCommandResult> caller = AsyncCallbackDispatcher.create(this);
+
             caller.setCallback(caller.getTarget().managedCopyBaseImageCallback(null, null)).setContext(context);
 
             Map<String, String> details = new HashMap<String, String>();
 
             details.put(PrimaryDataStore.MANAGED, Boolean.TRUE.toString());
-            details.put(PrimaryDataStore.STORAGE_HOST, destPrimaryDataStore.getHostAddress());
-            details.put(PrimaryDataStore.STORAGE_PORT, String.valueOf(destPrimaryDataStore.getPort()));
+            details.put(PrimaryDataStore.STORAGE_HOST, primaryDataStore.getHostAddress());
+            details.put(PrimaryDataStore.STORAGE_PORT, String.valueOf(primaryDataStore.getPort()));
             // for managed storage, the storage repository (XenServer) or datastore (ESX) name is based off of the iScsiName property of a volume
             details.put(PrimaryDataStore.MANAGED_STORE_TARGET, volumeInfo.get_iScsiName());
             details.put(PrimaryDataStore.MANAGED_STORE_TARGET_ROOT_VOLUME, volumeInfo.getName());
             details.put(PrimaryDataStore.VOLUME_SIZE, String.valueOf(volumeInfo.getSize()));
 
-            ChapInfo chapInfo = getChapInfo(volumeInfo, destPrimaryDataStore);
+            ChapInfo chapInfo = getChapInfo(volumeInfo, primaryDataStore);
 
             if (chapInfo != null) {
                 details.put(PrimaryDataStore.CHAP_INITIATOR_USERNAME, chapInfo.getInitiatorUsername());
@@ -705,16 +756,22 @@ public class VolumeServiceImpl implements VolumeService {
                 details.put(PrimaryDataStore.CHAP_TARGET_SECRET, chapInfo.getTargetSecret());
             }
 
-            destPrimaryDataStore.setDetails(details);
+            primaryDataStore.setDetails(details);
 
-            motionSrv.copyAsync(srcTemplateInfo, destTemplateInfo, destHost, caller);
-        }
-        catch (Throwable t) {
+            grantAccess(volumeInfo, destHost, primaryDataStore);
+
+            try {
+                motionSrv.copyAsync(srcTemplateInfo, destTemplateInfo, destHost, caller);
+            }
+            finally {
+                revokeAccess(volumeInfo, destHost, primaryDataStore);
+            }
+        } catch (Throwable t) {
             String errMsg = t.toString();
 
             volumeInfo.processEvent(Event.DestroyRequested);
 
-            revokeAccess(volumeInfo, destHost, destPrimaryDataStore);
+            revokeAccess(volumeInfo, destHost, primaryDataStore);
 
             try {
                 AsyncCallFuture<VolumeApiResult> expungeVolumeFuture = expungeVolumeAsync(volumeInfo);
@@ -735,8 +792,261 @@ public class VolumeServiceImpl implements VolumeService {
 
             future.complete(result);
         }
+    }
 
-        return future;
+    /**
+     * Creates a template volume on managed storage, which will be used for creating ROOT volumes by cloning.
+     *
+     * @param srcTemplateInfo Source template on secondary storage
+     * @param destPrimaryDataStore Managed storage on which we need to create the volume
+     */
+    private TemplateInfo createManagedTemplateVolume(TemplateInfo srcTemplateInfo, PrimaryDataStore destPrimaryDataStore) {
+        // create a template volume on primary storage
+        AsyncCallFuture<VolumeApiResult> createTemplateFuture = new AsyncCallFuture<>();
+        TemplateInfo templateOnPrimary = (TemplateInfo)destPrimaryDataStore.create(srcTemplateInfo);
+
+        VMTemplateStoragePoolVO templatePoolRef = _tmpltPoolDao.findByPoolTemplate(destPrimaryDataStore.getId(), templateOnPrimary.getId());
+
+        if (templatePoolRef == null) {
+            throw new CloudRuntimeException("Failed to find template " + srcTemplateInfo.getUniqueName() + " in storage pool " + destPrimaryDataStore.getId());
+        }
+
+        // At this point, we have an entry in the DB that points to our cached template.
+        // We need to lock it as there may be other VMs that may get started using the same template.
+        // We want to avoid having to create multiple cache copies of the same template.
+
+        int storagePoolMaxWaitSeconds = NumbersUtil.parseInt(configDao.getValue(Config.StoragePoolMaxWaitSeconds.key()), 3600);
+        long templatePoolRefId = templatePoolRef.getId();
+
+        templatePoolRef = _tmpltPoolDao.acquireInLockTable(templatePoolRefId, storagePoolMaxWaitSeconds);
+
+        if (templatePoolRef == null) {
+            throw new CloudRuntimeException("Unable to acquire lock on VMTemplateStoragePool: " + templatePoolRefId);
+        }
+
+        // Template already exists
+        if (templatePoolRef.getState() == ObjectInDataStoreStateMachine.State.Ready) {
+            _tmpltPoolDao.releaseFromLockTable(templatePoolRefId);
+
+            return templateOnPrimary;
+        }
+
+        try {
+            // create a cache volume on the back-end
+
+            templateOnPrimary.processEvent(Event.CreateOnlyRequested);
+
+            CreateVolumeContext<CreateCmdResult> createContext = new CreateVolumeContext<>(null, templateOnPrimary, createTemplateFuture);
+            AsyncCallbackDispatcher<VolumeServiceImpl, CreateCmdResult> createCaller = AsyncCallbackDispatcher.create(this);
+
+            createCaller.setCallback(createCaller.getTarget().createManagedTemplateImageCallback(null, null)).setContext(createContext);
+
+            destPrimaryDataStore.getDriver().createAsync(destPrimaryDataStore, templateOnPrimary, createCaller);
+
+            VolumeApiResult result = createTemplateFuture.get();
+
+            if (result.isFailed()) {
+                String errMsg =  result.getResult();
+
+                throw new CloudRuntimeException("Unable to create template " +  templateOnPrimary.getId() +
+                        " on primary storage " + destPrimaryDataStore.getId() + ":" + errMsg);
+            }
+        } catch (Throwable e) {
+            s_logger.debug("Failed to create template volume on storage", e);
+
+            templateOnPrimary.processEvent(Event.OperationFailed);
+
+            throw new CloudRuntimeException(e.getMessage());
+        }
+        finally {
+            _tmpltPoolDao.releaseFromLockTable(templatePoolRefId);
+        }
+
+        return templateOnPrimary;
+    }
+
+    protected Void createManagedTemplateImageCallback(AsyncCallbackDispatcher<VolumeServiceImpl, CreateCmdResult> callback, CreateVolumeContext<CreateCmdResult> context) {
+        CreateCmdResult result = callback.getResult();
+        VolumeApiResult res = new VolumeApiResult(null);
+
+        res.setResult(result.getResult());
+
+        AsyncCallFuture<VolumeApiResult> future = context.getFuture();
+        DataObject templateOnPrimaryStoreObj = context.getVolume();
+
+        if (result.isSuccess()) {
+            ((TemplateInfo)templateOnPrimaryStoreObj).setInstallPath(result.getPath());
+            templateOnPrimaryStoreObj.processEvent(Event.OperationSuccessed, result.getAnswer());
+        }
+        else {
+            templateOnPrimaryStoreObj.processEvent(Event.OperationFailed);
+        }
+
+        future.complete(res);
+
+        return null;
+    }
+
+    /**
+     * Clones the template volume on managed storage to the ROOT volume
+     *
+     * @param volumeInfo ROOT volume to create
+     * @param templateOnPrimary Template from which to clone the ROOT volume
+     * @param destPrimaryDataStore Primary storage of the volume
+     * @param future For async
+     */
+    private void createManagedVolumeCloneTemplateAsync(VolumeInfo volumeInfo, TemplateInfo templateOnPrimary, PrimaryDataStore destPrimaryDataStore,
+                                                       AsyncCallFuture<VolumeApiResult> future) {
+        VMTemplateStoragePoolVO templatePoolRef = _tmpltPoolDao.findByPoolTemplate(destPrimaryDataStore.getId(), templateOnPrimary.getId());
+
+        if (templatePoolRef == null) {
+            throw new CloudRuntimeException("Failed to find template " + templateOnPrimary.getUniqueName() + " in storage pool " + destPrimaryDataStore.getId());
+        }
+
+        //XXX: not sure if this the right thing to do here. We can always fallback to the "copy from sec storage"
+        if (templatePoolRef.getDownloadState() == Status.NOT_DOWNLOADED) {
+            throw new CloudRuntimeException("Template " + templateOnPrimary.getUniqueName() + " has not been downloaded to primary storage.");
+        }
+
+        try {
+            volumeInfo.processEvent(Event.CreateOnlyRequested);
+
+            CreateVolumeFromBaseImageContext<VolumeApiResult> context =
+                    new CreateVolumeFromBaseImageContext<>(null, volumeInfo, destPrimaryDataStore, templateOnPrimary, future, null);
+
+            AsyncCallbackDispatcher<VolumeServiceImpl, CopyCommandResult> caller = AsyncCallbackDispatcher.create(this);
+
+            caller.setCallback(caller.getTarget().createVolumeFromBaseImageCallBack(null, null));
+            caller.setContext(context);
+
+            motionSrv.copyAsync(templateOnPrimary, volumeInfo, caller);
+        } catch (Throwable e) {
+            s_logger.debug("Failed to clone template on primary storage", e);
+
+            volumeInfo.processEvent(Event.OperationFailed);
+
+            throw new CloudRuntimeException(e.getMessage());
+        }
+    }
+
+    /**
+     * This function copies a template from secondary storage to a template volume
+     * created on managed storage. This template volume will be used as a cache.
+     * Instead of copying the template to a ROOT volume every time, a clone is performed instead.
+     *
+     * @param srcTemplateInfo Source from which to copy the template
+     * @param templateOnPrimary Dest to copy to
+     * @param templatePoolRef Template reference on primary storage (entry in the template_spool_ref)
+     * @param destPrimaryDataStore The managed primary storage
+     * @param destHost The host that we will use for the copy
+     */
+    private void copyTemplateToManagedTemplateVolume(TemplateInfo srcTemplateInfo, TemplateInfo templateOnPrimary, VMTemplateStoragePoolVO templatePoolRef,
+                                                     PrimaryDataStore destPrimaryDataStore, Host destHost)
+    {
+        AsyncCallFuture<VolumeApiResult> copyTemplateFuture = new AsyncCallFuture<>();
+        int storagePoolMaxWaitSeconds = NumbersUtil.parseInt(configDao.getValue(Config.StoragePoolMaxWaitSeconds.key()), 3600);
+        long templatePoolRefId = templatePoolRef.getId();
+
+        templatePoolRef = _tmpltPoolDao.acquireInLockTable(templatePoolRefId, storagePoolMaxWaitSeconds);
+
+        if (templatePoolRef == null) {
+            throw new CloudRuntimeException("Unable to acquire lock on VMTemplateStoragePool: " + templatePoolRefId);
+        }
+
+        if (templatePoolRef.getDownloadState() == Status.DOWNLOADED) {
+            // There can be cases where we acquired the lock, but the template
+            // was already copied by a previous thread. Just return in that case.
+
+            s_logger.debug("Template already downloaded, nothing to do");
+
+            return;
+        }
+
+        try {
+            // copy the template from sec storage to the created volume
+            CreateBaseImageContext<CreateCmdResult> copyContext = new CreateBaseImageContext<>(
+                    null, null, destPrimaryDataStore, srcTemplateInfo,
+                    copyTemplateFuture, templateOnPrimary, templatePoolRefId
+            );
+
+            AsyncCallbackDispatcher<VolumeServiceImpl, CopyCommandResult> copyCaller = AsyncCallbackDispatcher.create(this);
+            copyCaller.setCallback(copyCaller.getTarget().copyManagedTemplateCallback(null, null)).setContext(copyContext);
+
+            // Populate details which will be later read by the storage subsystem.
+            Map<String, String> details = new HashMap<String, String>();
+
+            details.put(PrimaryDataStore.MANAGED, Boolean.TRUE.toString());
+            details.put(PrimaryDataStore.STORAGE_HOST, destPrimaryDataStore.getHostAddress());
+            details.put(PrimaryDataStore.STORAGE_PORT, String.valueOf(destPrimaryDataStore.getPort()));
+            details.put(PrimaryDataStore.MANAGED_STORE_TARGET, templateOnPrimary.getInstallPath());
+            details.put(PrimaryDataStore.MANAGED_STORE_TARGET_ROOT_VOLUME, srcTemplateInfo.getUniqueName());
+            details.put(PrimaryDataStore.VOLUME_SIZE, String.valueOf(templateOnPrimary.getSize()));
+
+            ChapInfo chapInfo = getChapInfo(templateOnPrimary, destPrimaryDataStore);
+
+            if (chapInfo != null) {
+                details.put(PrimaryDataStore.CHAP_INITIATOR_USERNAME, chapInfo.getInitiatorUsername());
+                details.put(PrimaryDataStore.CHAP_INITIATOR_SECRET, chapInfo.getInitiatorSecret());
+                details.put(PrimaryDataStore.CHAP_TARGET_USERNAME, chapInfo.getTargetUsername());
+                details.put(PrimaryDataStore.CHAP_TARGET_SECRET, chapInfo.getTargetSecret());
+            }
+
+            templateOnPrimary.processEvent(Event.CopyingRequested);
+
+            destPrimaryDataStore.setDetails(details);
+
+            grantAccess(templateOnPrimary, destHost, destPrimaryDataStore);
+
+            VolumeApiResult result = null;
+
+            try {
+                motionSrv.copyAsync(srcTemplateInfo, templateOnPrimary, destHost, copyCaller);
+
+                result = copyTemplateFuture.get();
+            }
+            finally {
+                revokeAccess(templateOnPrimary, destHost, destPrimaryDataStore);
+            }
+
+            if (result.isFailed()) {
+                throw new CloudRuntimeException("Failed to copy template " + templateOnPrimary.getId() +
+                        " to primary storage " + destPrimaryDataStore.getId() + ": " + result.getResult());
+                // XXX: I find it is useful to destroy the volume on primary storage instead of another thread trying the copy again because I've seen
+                // something weird happens to the volume (XenServer creates an SR, but the VDI copy can fail).
+                // For now, I just retry the copy.
+            }
+        }
+        catch (Throwable e) {
+            s_logger.debug("Failed to create a template on primary storage", e);
+
+            templateOnPrimary.processEvent(Event.OperationFailed);
+
+            throw new CloudRuntimeException(e.getMessage());
+        }
+        finally {
+            _tmpltPoolDao.releaseFromLockTable(templatePoolRefId);
+        }
+    }
+
+    protected Void copyManagedTemplateCallback(AsyncCallbackDispatcher<VolumeServiceImpl, CopyCommandResult> callback, CreateBaseImageContext<VolumeApiResult> context) {
+        CopyCommandResult result = callback.getResult();
+        VolumeApiResult res = new VolumeApiResult(context.getVolume());
+
+        res.setResult(result.getResult());
+
+        AsyncCallFuture<VolumeApiResult> future = context.getFuture();
+        DataObject templateOnPrimaryStoreObj = context.destObj;
+
+        if (result.isSuccess()) {
+            templateOnPrimaryStoreObj.processEvent(Event.OperationSuccessed, result.getAnswer());
+        }
+        else {
+            templateOnPrimaryStoreObj.processEvent(Event.OperationFailed);
+        }
+
+        future.complete(res);
+
+        return null;
     }
 
     @DB

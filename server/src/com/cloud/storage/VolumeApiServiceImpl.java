@@ -902,7 +902,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             newMinIops = cmd.getMinIops();
 
             if (newMinIops != null) {
-                if (diskOffering.isCustomizedIops() == null || !diskOffering.isCustomizedIops()) {
+                if (!volume.getVolumeType().equals(Volume.Type.ROOT) && (diskOffering.isCustomizedIops() == null || !diskOffering.isCustomizedIops())) {
                     throw new InvalidParameterValueException("The current disk offering does not support customization of the 'Min IOPS' parameter.");
                 }
             }
@@ -914,7 +914,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             newMaxIops = cmd.getMaxIops();
 
             if (newMaxIops != null) {
-                if (diskOffering.isCustomizedIops() == null || !diskOffering.isCustomizedIops()) {
+                if (!volume.getVolumeType().equals(Volume.Type.ROOT) && (diskOffering.isCustomizedIops() == null || !diskOffering.isCustomizedIops())) {
                     throw new InvalidParameterValueException("The current disk offering does not support customization of the 'Max IOPS' parameter.");
                 }
             }
@@ -985,6 +985,24 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         if (currentSize != newSize) {
             if (!validateVolumeSizeRange(newSize)) {
                 throw new InvalidParameterValueException("Requested size out of range");
+            }
+
+            Long storagePoolId = volume.getPoolId();
+
+            if (storagePoolId != null) {
+                StoragePoolVO storagePoolVO = _storagePoolDao.findById(storagePoolId);
+
+                if (storagePoolVO.isManaged()) {
+                    Long instanceId = volume.getInstanceId();
+
+                    if (instanceId != null) {
+                        VMInstanceVO vmInstanceVO = _vmInstanceDao.findById(instanceId);
+
+                        if (vmInstanceVO.getHypervisorType() == HypervisorType.KVM && vmInstanceVO.getState() != State.Stopped) {
+                            throw new CloudRuntimeException("This kind of KVM disk cannot be resized while it is connected to a VM that's not in the Stopped state.");
+                        }
+                    }
+                }
             }
 
             /*
@@ -1151,22 +1169,6 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             VolumeInfo vol = volFactory.getVolume(volume.getId());
             vol.addPayload(payload);
 
-            StoragePoolVO storagePool = _storagePoolDao.findById(vol.getPoolId());
-
-            // managed storage is designed in such a way that the storage plug-in does not
-            // talk to the hypervisor layer; as such, if the storage is managed and the
-            // current and new sizes are different, then CloudStack (i.e. not a storage plug-in)
-            // needs to tell the hypervisor to resize the disk
-            if (storagePool.isManaged() && currentSize != newSize) {
-                if (hosts != null && hosts.length > 0) {
-                    volService.resizeVolumeOnHypervisor(volumeId, newSize, hosts[0], instanceName);
-                }
-
-                volume.setSize(newSize);
-
-                _volsDao.update(volume.getId(), volume);
-            }
-
             // this call to resize has a different impact depending on whether the
             // underlying primary storage is managed or not
             // if managed, this is the chance for the plug-in to change IOPS value, if applicable
@@ -1182,6 +1184,26 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
                     details = result.getResult();
                 }
                 throw new CloudRuntimeException(details);
+            }
+
+            StoragePoolVO storagePool = _storagePoolDao.findById(vol.getPoolId());
+
+            // managed storage is designed in such a way that the storage plug-in does not
+            // talk to the hypervisor layer; as such, if the storage is managed and the
+            // current and new sizes are different, then CloudStack (i.e. not a storage plug-in)
+            // needs to tell the hypervisor to resize the disk
+            if (storagePool.isManaged() && currentSize != newSize) {
+                if (hosts != null && hosts.length > 0) {
+                    HostVO hostVO = _hostDao.findById(hosts[0]);
+
+                    if (hostVO.getHypervisorType() != HypervisorType.KVM) {
+                        volService.resizeVolumeOnHypervisor(volumeId, newSize, hosts[0], instanceName);
+                    }
+                }
+
+                volume.setSize(newSize);
+
+                _volsDao.update(volume.getId(), volume);
             }
 
             volume = _volsDao.findById(volume.getId());
@@ -2527,6 +2549,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             // Mark the volume as attached
             if (sendCommand) {
                 DiskTO disk = answer.getDisk();
+
                 _volsDao.attachVolume(volumeToAttach.getId(), vm.getId(), disk.getDiskSeq());
 
                 volumeToAttach = _volsDao.findById(volumeToAttach.getId());
@@ -2540,6 +2563,14 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
                 deviceId = getDeviceId(vm.getId(), deviceId);
 
                 _volsDao.attachVolume(volumeToAttach.getId(), vm.getId(), deviceId);
+
+                volumeToAttach = _volsDao.findById(volumeToAttach.getId());
+
+                if (vm.getHypervisorType() == HypervisorType.KVM && volumeToAttachStoragePool.isManaged() && volumeToAttach.getPath() == null) {
+                    volumeToAttach.setPath(volumeToAttach.get_iScsiName());
+
+                    _volsDao.update(volumeToAttach.getId(), volumeToAttach);
+                }
             }
 
             // insert record for disk I/O statistics

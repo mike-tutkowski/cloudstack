@@ -48,12 +48,12 @@ import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.to.DataObjectType;
 import com.cloud.agent.api.to.DataStoreTO;
 import com.cloud.agent.api.to.DataTO;
+import com.cloud.host.Host;
 import com.cloud.storage.DiskOfferingVO;
 import com.cloud.storage.ResizeVolumePayload;
 import com.cloud.storage.Storage.StoragePoolType;
 import com.cloud.storage.StorageManager;
 import com.cloud.storage.StoragePool;
-import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeDetailVO;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
@@ -110,7 +110,7 @@ public class ElastistorPrimaryDataStoreDriver extends CloudStackPrimaryDataStore
             String volumeName = volumeInfo.getName();
             Long Iops = volumeInfo.getMaxIops();
             // quota size of the cloudbyte volume will be increased with the given HypervisorSnapshotReserve
-            Long quotaSize = getVolumeSizeIncludingHypervisorSnapshotReserve(volumeInfo, _storagePoolDao.findById(storagePoolId));
+            Long quotaSize = getDataObjectSizeIncludingHypervisorSnapshotReserve(volumeInfo, _storagePoolDao.findById(storagePoolId));
 
             StoragePoolVO storagePool = _storagePoolDao.findById(dataStore.getId());
             VolumeVO volume = _volumeDao.findById(volumeInfo.getId());
@@ -337,7 +337,8 @@ public class ElastistorPrimaryDataStoreDriver extends CloudStackPrimaryDataStore
     }
 
     @Override
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    public long getDataObjectSizeIncludingHypervisorSnapshotReserve(DataObject dataObject, StoragePool pool) {
+        VolumeInfo volume = (VolumeInfo)dataObject;
         long volumeSize = volume.getSize();
         Integer hypervisorSnapshotReserve = volume.getHypervisorSnapshotReserve();
 
@@ -353,7 +354,7 @@ public class ElastistorPrimaryDataStoreDriver extends CloudStackPrimaryDataStore
     }
 
     @Override
-    public ChapInfo getChapInfo(VolumeInfo volumeInfo) {
+    public ChapInfo getChapInfo(DataObject dataObject) {
         return null;
     }
 
@@ -403,7 +404,19 @@ public class ElastistorPrimaryDataStoreDriver extends CloudStackPrimaryDataStore
 
         mapCapabilities.put(DataStoreCapabilities.STORAGE_SYSTEM_SNAPSHOT.toString(), Boolean.TRUE.toString());
 
-        return mapCapabilities;
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    @Override
+    public boolean grantAccess(DataObject dataObject, Host host, DataStore dataStore) {
+        // TODO Auto-generated method stub
+        return false;
+    }
+
+    @Override
+    public void revokeAccess(DataObject dataObject, Host host, DataStore dataStore) {
+        // TODO Auto-generated method stub
     }
 
 }

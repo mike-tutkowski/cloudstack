@@ -28,7 +28,6 @@ import org.apache.log4j.Logger;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataObjectInStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.ObjectInDataStoreStateMachine;
-import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.TemplateInfo;
 import org.apache.cloudstack.storage.command.CopyCmdAnswer;
 import org.apache.cloudstack.storage.datastore.ObjectInDataStoreManager;
@@ -53,6 +52,8 @@ import com.cloud.template.VirtualMachineTemplate;
 import com.cloud.utils.component.ComponentContext;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.fsm.NoTransitionException;
+
+import com.google.common.base.Strings;
 
 public class TemplateObject implements TemplateInfo {
     private static final Logger s_logger = Logger.getLogger(TemplateObject.class);
@@ -189,12 +190,15 @@ public class TemplateObject implements TemplateInfo {
                     TemplateObjectTO newTemplate = (TemplateObjectTO)cpyAnswer.getNewData();
                     VMTemplateStoragePoolVO templatePoolRef = templatePoolDao.findByPoolTemplate(getDataStore().getId(), getId());
                     templatePoolRef.setDownloadPercent(100);
-                    if (newTemplate.getSize() != null) {
-                        templatePoolRef.setTemplateSize(newTemplate.getSize());
-                    }
+
+                    setTemplateSizeIfNeeded(newTemplate, templatePoolRef);
+
                     templatePoolRef.setDownloadState(Status.DOWNLOADED);
-                    templatePoolRef.setLocalDownloadPath(newTemplate.getPath());
-                    templatePoolRef.setInstallPath(newTemplate.getPath());
+
+                    setDownloadPathIfNeeded(newTemplate, templatePoolRef);
+
+                    setInstallPathIfNeeded(newTemplate, templatePoolRef);
+
                     templatePoolDao.update(templatePoolRef.getId(), templatePoolRef);
                 }
             } else if (getDataStore().getRole() == DataStoreRole.Image || getDataStore().getRole() == DataStoreRole.ImageCache) {
@@ -299,30 +303,20 @@ public class TemplateObject implements TemplateInfo {
 
     @Override
     public String getInstallPath() {
-        if (installPath != null)
+        if (installPath != null) {
             return installPath;
+        }
 
         if (dataStore == null) {
             return null;
         }
 
-        // managed primary data stores should not have an install path
-        if (dataStore instanceof PrimaryDataStore) {
-            PrimaryDataStore primaryDataStore = (PrimaryDataStore)dataStore;
-
-            Map<String, String> details = primaryDataStore.getDetails();
-
-            boolean managed = details != null && Boolean.parseBoolean(details.get(PrimaryDataStore.MANAGED));
-
-            if (managed) {
-                return null;
-            }
-        }
-
         DataObjectInStore obj = objectInStoreMgr.findObject(this, dataStore);
-        return obj.getInstallPath();
+
+        return obj != null ? obj.getInstallPath() : null;
     }
 
+    @Override
     public void setInstallPath(String installPath) {
         this.installPath = installPath;
     }
@@ -477,5 +471,32 @@ public class TemplateObject implements TemplateInfo {
     public Date getUpdated() {
         // TODO Auto-generated method stub
         return null;
+    }
+
+    /**
+     * In the case of managed storage, the install path may already be specified (by the storage plug-in), so do not overwrite it.
+     */
+    private void setInstallPathIfNeeded(TemplateObjectTO template, VMTemplateStoragePoolVO templatePoolRef) {
+        if (Strings.isNullOrEmpty(templatePoolRef.getInstallPath())) {
+            templatePoolRef.setInstallPath(template.getPath());
+        }
+    }
+
+    /**
+     * In the case of managed storage, the local download path may already be specified (by the storage plug-in), so do not overwrite it.
+     */
+    private void setDownloadPathIfNeeded(TemplateObjectTO template, VMTemplateStoragePoolVO templatePoolRef) {
+        if (Strings.isNullOrEmpty(templatePoolRef.getLocalDownloadPath())) {
+            templatePoolRef.setLocalDownloadPath(template.getPath());
+        }
+    }
+
+    /**
+     *  In the case of managed storage, the template size may already be specified (by the storage plug-in), so do not overwrite it.
+     */
+    private void setTemplateSizeIfNeeded(TemplateObjectTO template, VMTemplateStoragePoolVO templatePoolRef) {
+        if (templatePoolRef.getTemplateSize() == 0 && template.getSize() != null) {
+            templatePoolRef.setTemplateSize(template.getSize());
+        }
     }
 }

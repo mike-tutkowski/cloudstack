@@ -52,6 +52,8 @@ public interface TemplateService {
 
     AsyncCallFuture<TemplateApiResult> prepareTemplateOnPrimary(TemplateInfo srcTemplate, StoragePool pool);
 
+    AsyncCallFuture<TemplateApiResult> deleteTemplateOnPrimary(TemplateInfo template, StoragePool pool);
+
     void syncTemplateToRegionStore(long templateId, DataStore store);
 
     void handleSysTemplateDownload(HypervisorType hostHyper, Long dcId);

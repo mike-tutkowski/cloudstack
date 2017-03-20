@@ -4310,10 +4310,10 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             throw new InvalidParameterValueException("can only do storage migration on user vm");
         }
 
-        List<VolumeVO> vols = _volsDao.findByInstance(vm.getId());
-        if (vols.size() > 1) {
-            throw new InvalidParameterValueException("Data disks attached to the vm, can not migrate. Need to dettach data disks at first");
-        }
+//        List<VolumeVO> vols = _volsDao.findByInstance(vm.getId());
+//        if (vols.size() > 1) {
+//            throw new InvalidParameterValueException("Data disks attached to the vm, can not migrate. Need to detach data disks at first");
+//        }
 
         // Check that Vm does not have VM Snapshots
         if (_vmSnapshotDao.findByVm(vmId).size() > 0) {
@@ -4326,7 +4326,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 destPool.getClusterId()).getHypervisorType();
         }
 
-        if (vm.getHypervisorType() != destHypervisorType) {
+        if (vm.getHypervisorType() != destHypervisorType && destHypervisorType != HypervisorType.Any) {
             throw new InvalidParameterValueException("hypervisor is not compatible: dest: " + destHypervisorType.toString() + ", vm: " + vm.getHypervisorType().toString());
         }
         _itMgr.storageMigration(vm.getUuid(), destPool);

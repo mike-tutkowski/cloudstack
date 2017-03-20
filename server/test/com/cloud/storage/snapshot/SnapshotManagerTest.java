@@ -37,6 +37,7 @@ import org.apache.cloudstack.engine.subsystem.api.storage.StorageStrategyFactory
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.junit.After;
 import org.junit.Assert;
@@ -119,6 +120,8 @@ public class SnapshotManagerTest {
     ResourceManager _resourceMgr;
     @Mock
     DataStore storeMock;
+    @Mock
+    SnapshotDataStoreDao _snapshotStoreDao;
 
     private static final long TEST_SNAPSHOT_ID = 3L;
     private static final long TEST_VOLUME_ID = 4L;
@@ -139,6 +142,7 @@ public class SnapshotManagerTest {
         _snapshotMgr._storagePoolDao = _storagePoolDao;
         _snapshotMgr._resourceMgr = _resourceMgr;
         _snapshotMgr._vmSnapshotDao = _vmSnapshotDao;
+        _snapshotMgr._snapshotStoreDao = _snapshotStoreDao;
 
         when(_snapshotDao.findById(anyLong())).thenReturn(snapshotMock);
         when(snapshotMock.getVolumeId()).thenReturn(TEST_VOLUME_ID);
@@ -243,7 +247,11 @@ public class SnapshotManagerTest {
         when(snapshotMock.getState()).thenReturn(Snapshot.State.Destroyed);
         when(snapshotMock.getAccountId()).thenReturn(2L);
         when(snapshotMock.getDataCenterId()).thenReturn(2L);
+        when(snapshotMock.getId()).thenReturn(TEST_SNAPSHOT_ID);
+        when(_snapshotStoreDao.findBySnapshot(TEST_SNAPSHOT_ID, DataStoreRole.Image)).thenReturn(null);
+
         boolean result =_snapshotMgr.deleteSnapshot(TEST_SNAPSHOT_ID);
+
         Assert.assertTrue(result);
     }
 

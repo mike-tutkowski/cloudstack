@@ -20,12 +20,15 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.cloud.storage.Storage;
+import org.apache.cloudstack.utils.qemu.QemuImg;
+import org.apache.cloudstack.utils.qemu.QemuImgException;
+import org.apache.cloudstack.utils.qemu.QemuImgFile;
 import org.apache.log4j.Logger;
 
 import org.apache.cloudstack.utils.qemu.QemuImg.PhysicalDiskFormat;
 
 import com.cloud.agent.api.to.DiskTO;
+import com.cloud.storage.Storage;
 import com.cloud.storage.Storage.ProvisioningType;
 import com.cloud.storage.Storage.StoragePoolType;
 import com.cloud.utils.StringUtils;
@@ -356,8 +359,36 @@ public class IscsiAdmStorageAdaptor implements StorageAdaptor {
     }
 
     @Override
-    public KVMPhysicalDisk copyPhysicalDisk(KVMPhysicalDisk disk, String name, KVMStoragePool destPool, int timeout) {
-        throw new UnsupportedOperationException("Copying a disk is not supported in this configuration.");
+    public KVMPhysicalDisk copyPhysicalDisk(KVMPhysicalDisk srcDisk, String destVolumeUuid, KVMStoragePool destPool, int timeout) {
+        QemuImg q = new QemuImg(timeout);
+
+        QemuImgFile srcFile;
+
+        KVMStoragePool srcPool = srcDisk.getPool();
+
+        if (srcPool.getType() == StoragePoolType.RBD) {
+            srcFile = new QemuImgFile(KVMPhysicalDisk.RBDStringBuilder(srcPool.getSourceHost(), srcPool.getSourcePort(),
+                    srcPool.getAuthUserName(), srcPool.getAuthSecret(), srcDisk.getPath()),srcDisk.getFormat());
+        } else {
+            srcFile = new QemuImgFile(srcDisk.getPath(), srcDisk.getFormat());
+        }
+
+        KVMPhysicalDisk destDisk = destPool.getPhysicalDisk(destVolumeUuid);
+
+        QemuImgFile destFile = new QemuImgFile(destDisk.getPath(), destDisk.getFormat());
+
+        try {
+            q.convert(srcFile, destFile);
+        } catch (QemuImgException ex) {
+            String msg = "Failed to copy data from " + srcDisk.getPath() + " to " +
+                    destDisk.getPath() + ". The error was the following: " + ex.getMessage();
+
+            s_logger.error(msg);
+
+            throw new CloudRuntimeException(msg);
+        }
+
+        return destPool.getPhysicalDisk(destVolumeUuid);
     }
 
     @Override

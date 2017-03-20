@@ -2365,6 +2365,10 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
     }
 
     @Override
+    public void processHostAdded(long hostId) {
+    }
+
+    @Override
     public void processConnect(final Host host, final StartupCommand cmd, final boolean forRebalance) throws ConnectionException {
         final List<DomainRouterVO> routers = _routerDao.listIsolatedByHostId(host.getId());
         for (DomainRouterVO router : routers) {
@@ -2396,6 +2400,14 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
     @Override
     public boolean processDisconnect(final long agentId, final Status state) {
         return false;
+    }
+
+    @Override
+    public void processHostAboutToBeRemoved(long hostId) {
+    }
+
+    @Override
+    public void processHostRemoved(long hostId, long clusterId) {
     }
 
     @Override

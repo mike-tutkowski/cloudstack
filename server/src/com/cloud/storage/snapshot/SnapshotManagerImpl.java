@@ -35,6 +35,7 @@ import org.apache.cloudstack.api.command.user.snapshot.ListSnapshotsCmd;
 import org.apache.cloudstack.api.command.user.snapshot.UpdateSnapshotPolicyCmd;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
+import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreCapabilities;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
 import org.apache.cloudstack.engine.subsystem.api.storage.EndPoint;
 import org.apache.cloudstack.engine.subsystem.api.storage.EndPointSelector;
@@ -266,7 +267,9 @@ public class SnapshotManagerImpl extends ManagerBase implements SnapshotManager,
             }
         }
 
-        SnapshotInfo snapshotInfo = snapshotFactory.getSnapshot(snapshotId, DataStoreRole.Image);
+        DataStoreRole dataStoreRole = getDataStoreRole(snapshot, _snapshotStoreDao, dataStoreMgr);
+
+        SnapshotInfo snapshotInfo = snapshotFactory.getSnapshot(snapshotId, dataStoreRole);
         if (snapshotInfo == null) {
             throw new CloudRuntimeException("snapshot:" + snapshotId + " not exist in data store");
         }
@@ -450,6 +453,10 @@ public class SnapshotManagerImpl extends ManagerBase implements SnapshotManager,
             return false;
         }
 
+        DataStoreRole dataStoreRole = getDataStoreRole(snapshotCheck, _snapshotStoreDao, dataStoreMgr);
+
+        SnapshotDataStoreVO snapshotStoreRef = _snapshotStoreDao.findBySnapshot(snapshotId, dataStoreRole);
+
         try {
             boolean result = snapshotStrategy.deleteSnapshot(snapshotId);
 
@@ -464,8 +471,6 @@ public class SnapshotManagerImpl extends ManagerBase implements SnapshotManager,
                 }
 
                 if (snapshotCheck.getState() == Snapshot.State.BackedUp) {
-                    SnapshotDataStoreVO snapshotStoreRef = _snapshotStoreDao.findBySnapshot(snapshotId, DataStoreRole.Image);
-
                     if (snapshotStoreRef != null) {
                         _resourceLimitMgr.decrementResourceCount(snapshotCheck.getAccountId(), ResourceType.secondary_storage, new Long(snapshotStoreRef.getPhysicalSize()));
                     }
@@ -1009,9 +1014,14 @@ public class SnapshotManagerImpl extends ManagerBase implements SnapshotManager,
 
             try {
                 postCreateSnapshot(volume.getId(), snapshotId, payload.getSnapshotPolicyId());
-                SnapshotDataStoreVO snapshotStoreRef = _snapshotStoreDao.findBySnapshot(snapshotId, DataStoreRole.Image);
+
+                DataStoreRole dataStoreRole = getDataStoreRole(snapshot, _snapshotStoreDao, dataStoreMgr);
+
+                SnapshotDataStoreVO snapshotStoreRef = _snapshotStoreDao.findBySnapshot(snapshotId, dataStoreRole);
+
                 UsageEventUtils.publishUsageEvent(EventTypes.EVENT_SNAPSHOT_CREATE, snapshot.getAccountId(), snapshot.getDataCenterId(), snapshotId, snapshot.getName(),
                     null, null, snapshotStoreRef.getPhysicalSize(), volume.getSize(), snapshot.getClass().getName(), snapshot.getUuid());
+
                 // Correct the resource count of snapshot in case of delta snapshots.
                 _resourceLimitMgr.decrementResourceCount(snapshotOwner.getId(), ResourceType.secondary_storage, new Long(volume.getSize() - snapshotStoreRef.getPhysicalSize()));
             } catch (Exception e) {
@@ -1024,6 +1034,30 @@ public class SnapshotManagerImpl extends ManagerBase implements SnapshotManager,
             throw new CloudRuntimeException("Failed to create snapshot", e);
         }
         return snapshot;
+    }
+
+    private static DataStoreRole getDataStoreRole(Snapshot snapshot, SnapshotDataStoreDao snapshotStoreDao, DataStoreManager dataStoreMgr) {
+        SnapshotDataStoreVO snapshotStore = snapshotStoreDao.findBySnapshot(snapshot.getId(), DataStoreRole.Primary);
+
+        if (snapshotStore == null) {
+            return DataStoreRole.Image;
+        }
+
+        long storagePoolId = snapshotStore.getDataStoreId();
+        DataStore dataStore = dataStoreMgr.getDataStore(storagePoolId, DataStoreRole.Primary);
+
+        Map<String, String> mapCapabilities = dataStore.getDriver().getCapabilities();
+
+        if (mapCapabilities != null) {
+            String value = mapCapabilities.get(DataStoreCapabilities.STORAGE_SYSTEM_SNAPSHOT.toString());
+            Boolean supportsStorageSystemSnapshots = new Boolean(value);
+
+            if (supportsStorageSystemSnapshots) {
+                return DataStoreRole.Primary;
+            }
+        }
+
+        return DataStoreRole.Image;
     }
 
     @Override
@@ -1152,9 +1186,8 @@ public class SnapshotManagerImpl extends ManagerBase implements SnapshotManager,
         if (storagePool.getScope() == ScopeType.ZONE) {
             hypervisorType = storagePool.getHypervisor();
 
-            // at the time being, managed storage only supports XenServer, ESX(i), and KVM (i.e. not Hyper-V), so the VHD file type can be mapped to XenServer
-            if (storagePool.isManaged() && HypervisorType.Any.equals(hypervisorType) && ImageFormat.VHD.equals(volume.getFormat())) {
-                hypervisorType = HypervisorType.XenServer;
+            if (storagePool.isManaged() && HypervisorType.Any.equals(hypervisorType) && ImageFormat.QCOW2.equals(volume.getFormat())) {
+                hypervisorType = HypervisorType.KVM;
             }
         } else {
             hypervisorType = volume.getHypervisorType();

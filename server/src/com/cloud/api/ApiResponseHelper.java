@@ -151,9 +151,9 @@ import org.apache.cloudstack.region.PortableIp;
 import org.apache.cloudstack.region.PortableIpRange;
 import org.apache.cloudstack.region.Region;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreVO;
-import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.usage.Usage;
 import org.apache.cloudstack.usage.UsageService;
 import org.apache.cloudstack.usage.UsageTypes;
@@ -287,7 +287,6 @@ import com.cloud.storage.UploadVO;
 import com.cloud.storage.VMTemplateVO;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
-import com.cloud.storage.dao.VolumeDao;
 import com.cloud.storage.snapshot.SnapshotPolicy;
 import com.cloud.storage.snapshot.SnapshotSchedule;
 import com.cloud.template.VirtualMachineTemplate;
@@ -335,13 +334,11 @@ public class ApiResponseHelper implements ResponseGenerator {
     @Inject
     SnapshotDataFactory snapshotfactory;
     @Inject
-    private VolumeDao _volumeDao;
+    private DataStoreManager dataStoreMgr;
     @Inject
-    private DataStoreManager _dataStoreMgr;
+    private PrimaryDataStoreDao storagePoolDao;
     @Inject
-    private SnapshotDataStoreDao _snapshotStoreDao;
-    @Inject
-    private PrimaryDataStoreDao _storagePoolDao;
+    private SnapshotDataStoreDao snapshotStoreDao;
 
     @Override
     public UserResponse createUserResponse(User user) {
@@ -487,7 +484,7 @@ public class ApiResponseHelper implements ResponseGenerator {
         if (snapshot instanceof SnapshotInfo) {
             snapshotInfo = (SnapshotInfo)snapshot;
         } else {
-            DataStoreRole dataStoreRole = getDataStoreRole(snapshot, _snapshotStoreDao, _dataStoreMgr);
+            DataStoreRole dataStoreRole = getDataStoreRole(snapshot, snapshotStoreDao, dataStoreMgr);
 
             snapshotInfo = snapshotfactory.getSnapshot(snapshot.getId(), dataStoreRole);
         }
@@ -1493,12 +1490,12 @@ public class ApiResponseHelper implements ResponseGenerator {
             // it seems that the volume can actually be removed from the DB at some point if it's deleted
             // if volume comes back null, use another technique to try to discover the zone
             if (volume == null) {
-                SnapshotDataStoreVO snapshotStore = _snapshotStoreDao.findBySnapshot(snapshot.getId(), DataStoreRole.Primary);
+                SnapshotDataStoreVO snapshotStore = snapshotStoreDao.findBySnapshot(snapshot.getId(), DataStoreRole.Primary);
 
                 if (snapshotStore != null) {
                     long storagePoolId = snapshotStore.getDataStoreId();
 
-                    StoragePoolVO storagePool = _storagePoolDao.findById(storagePoolId);
+                    StoragePoolVO storagePool = storagePoolDao.findById(storagePoolId);
 
                     if (storagePool != null) {
                         zoneId = storagePool.getDataCenterId();

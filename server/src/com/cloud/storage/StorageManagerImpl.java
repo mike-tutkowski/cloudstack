@@ -466,7 +466,7 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
         _storagePoolAcquisitionWaitSeconds = NumbersUtil.parseInt(configs.get("pool.acquisition.wait.seconds"), 1800);
         s_logger.info("pool.acquisition.wait.seconds is configured as " + _storagePoolAcquisitionWaitSeconds + " seconds");
 
-        _agentMgr.registerForHostEvents(new StoragePoolMonitor(this, _storagePoolDao), true, false, true);
+        _agentMgr.registerForHostEvents(new StoragePoolMonitor(this, _storagePoolDao, _dataStoreProviderMgr), true, false, true);
 
         String value = _configDao.getValue(Config.StorageTemplateCleanupEnabled.key());
         _templateCleanupEnabled = (value == null ? true : Boolean.parseBoolean(value));
@@ -1807,7 +1807,9 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
         if (storeDriver instanceof PrimaryDataStoreDriver) {
             PrimaryDataStoreDriver primaryStoreDriver = (PrimaryDataStoreDriver)storeDriver;
 
-            return primaryStoreDriver.getVolumeSizeIncludingHypervisorSnapshotReserve(volume, pool);
+            VolumeInfo volumeInfo = volFactory.getVolume(volume.getId());
+
+            return primaryStoreDriver.getDataObjectSizeIncludingHypervisorSnapshotReserve(volumeInfo, pool);
         }
 
         return volume.getSize();

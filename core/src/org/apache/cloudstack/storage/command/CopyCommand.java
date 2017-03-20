@@ -29,8 +29,8 @@ public final class CopyCommand extends StorageSubSystemCommand {
     private DataTO destTO;
     private DataTO cacheTO;
     private boolean executeInSequence = false;
-    private Map<String, String> options = new HashMap<String, String>();
-    private Map<String, String> options2 = new HashMap<String, String>();
+    private Map<String, String> options = new HashMap<>();
+    private Map<String, String> options2 = new HashMap<>();
 
     public CopyCommand(final DataTO srcData, final DataTO destData, final int timeout, final boolean executeInSequence) {
         super();
@@ -81,7 +81,7 @@ public final class CopyCommand extends StorageSubSystemCommand {
         return options;
     }
 
-    public void setOptions2(final Map<String, String> options2) {
+    public void setOptions2(Map<String, String> options2) {
         this.options2 = options2;
     }
 

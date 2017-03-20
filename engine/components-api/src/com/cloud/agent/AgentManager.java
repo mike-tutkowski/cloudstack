@@ -42,7 +42,7 @@ public interface AgentManager {
         Add, Del, Contains,
     }
 
-    boolean handleDirectConnectAgent(Host host, StartupCommand[] cmds, ServerResource resource, boolean forRebalance) throws ConnectionException;
+    boolean handleDirectConnectAgent(Host host, StartupCommand[] cmds, ServerResource resource, boolean forRebalance, boolean newHost) throws ConnectionException;
 
     /**
      * easy send method that returns null if there's any errors. It handles all exceptions.
@@ -74,10 +74,6 @@ public interface AgentManager {
      *            id of the agent on host
      * @param cmds
      *            array of commands
-     * @param isControl
-     *            Commands sent contains control commands
-     * @param stopOnError
-     *            should the agent stop execution on the first error.
      * @return an array of Answer
      */
     Answer[] send(Long hostId, Commands cmds) throws AgentUnavailableException, OperationTimedoutException;
@@ -91,8 +87,6 @@ public interface AgentManager {
      *            id of the agent on the host.
      * @param cmds
      *            Commands to send.
-     * @param stopOnError
-     *            should the agent stop execution on the first error.
      * @param listener
      *            the listener to process the answer.
      * @return sequence number.
@@ -131,8 +125,6 @@ public interface AgentManager {
 
     Answer sendTo(Long dcId, HypervisorType type, Command cmd);
 
-//    public AgentAttache handleDirectConnectAgent(HostVO host, StartupCommand[] cmds, ServerResource resource, boolean forRebalance) throws ConnectionException;
-
     public boolean agentStatusTransitTo(HostVO host, Status.Event e, long msId);
 
     boolean isAgentAttached(long hostId);
@@ -146,4 +138,10 @@ public interface AgentManager {
     boolean reconnect(long hostId);
 
     void rescan();
+
+    void notifyMonitorsOfNewlyAddedHost(long hostId);
+
+    void notifyMonitorsOfHostAboutToBeRemoved(long hostId);
+
+    void notifyMonitorsOfRemovedHost(long hostId, long clusterId);
 }

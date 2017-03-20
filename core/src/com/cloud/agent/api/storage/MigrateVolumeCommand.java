@@ -19,7 +19,10 @@
 
 package com.cloud.agent.api.storage;
 
+import java.util.Map;
+
 import com.cloud.agent.api.Command;
+import com.cloud.agent.api.to.DataTO;
 import com.cloud.agent.api.to.StorageFilerTO;
 import com.cloud.storage.StoragePool;
 import com.cloud.storage.Volume;
@@ -31,6 +34,10 @@ public class MigrateVolumeCommand extends Command {
     StorageFilerTO pool;
     String attachedVmName;
     Volume.Type volumeType;
+
+    private DataTO srcData;
+    private DataTO destData;
+    private Map<String, String> details;
 
     public MigrateVolumeCommand(long volumeId, String volumePath, StoragePool pool, int timeout) {
         this.volumeId = volumeId;
@@ -46,6 +53,14 @@ public class MigrateVolumeCommand extends Command {
         this.attachedVmName = attachedVmName;
         this.volumeType = volumeType;
         this.setWait(timeout);
+    }
+
+    public MigrateVolumeCommand(final DataTO srcData, final DataTO destData, final Map<String, String> details, final int timeout) {
+        this.srcData = srcData;
+        this.destData = destData;
+        this.details = details;
+
+        setWait(timeout);
     }
 
     @Override
@@ -71,5 +86,21 @@ public class MigrateVolumeCommand extends Command {
 
     public Volume.Type getVolumeType() {
         return volumeType;
+    }
+
+    public DataTO getSrcData() {
+        return srcData;
+    }
+
+    public DataTO getDestData() {
+        return destData;
+    }
+
+    public Map<String, String> getDetails() {
+        return details;
+    }
+
+    public int getWaitInMillSeconds() {
+        return getWait() * 1000;
     }
 }

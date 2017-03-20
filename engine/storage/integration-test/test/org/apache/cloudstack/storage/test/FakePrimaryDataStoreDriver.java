@@ -44,7 +44,7 @@ public class FakePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     boolean snapshotResult = true;
 
     @Override
-    public ChapInfo getChapInfo(VolumeInfo volumeInfo) {
+    public ChapInfo getChapInfo(DataObject dataObject) {
         return null; // To change body of implemented methods, use File | Settings | File Templates.
     }
 
@@ -60,12 +60,7 @@ public class FakePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     }
 
     @Override
-    public long getUsedIops(StoragePool storagePool) {
-        return 0;
-    }
-
-    @Override
-    public long getVolumeSizeIncludingHypervisorSnapshotReserve(Volume volume, StoragePool pool) {
+    public long getDataObjectSizeIncludingHypervisorSnapshotReserve(DataObject dataObject, StoragePool pool) {
         return volume.getSize();
     }
 

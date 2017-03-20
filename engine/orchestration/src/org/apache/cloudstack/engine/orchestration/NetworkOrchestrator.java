@@ -3002,7 +3002,11 @@ public class NetworkOrchestrator extends ManagerBase implements NetworkOrchestra
     }
 
     @Override
-    public void processConnect(final Host host, final StartupCommand cmd, final boolean forRebalance) throws ConnectionException {
+    public void processHostAdded(long hostId) {
+    }
+
+    @Override
+    public void processConnect(Host host, StartupCommand cmd, boolean forRebalance) throws ConnectionException {
         if (!(cmd instanceof StartupRoutingCommand)) {
             return;
         }
@@ -3086,6 +3090,14 @@ public class NetworkOrchestrator extends ManagerBase implements NetworkOrchestra
     @Override
     public boolean processDisconnect(final long agentId, final Status state) {
         return false;
+    }
+
+    @Override
+    public void processHostAboutToBeRemoved(long hostId) {
+    }
+
+    @Override
+    public void processHostRemoved(long hostId, long clusterId) {
     }
 
     @Override
