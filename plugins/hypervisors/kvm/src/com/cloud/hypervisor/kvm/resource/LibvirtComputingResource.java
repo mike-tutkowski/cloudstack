@@ -192,6 +192,8 @@ import com.cloud.agent.api.storage.CreateAnswer;
 import com.cloud.agent.api.storage.CreateCommand;
 import com.cloud.agent.api.storage.CreatePrivateTemplateAnswer;
 import com.cloud.agent.api.storage.DestroyCommand;
+import com.cloud.agent.api.storage.MigrateVolumeAnswer;
+import com.cloud.agent.api.storage.MigrateVolumeCommand;
 import com.cloud.agent.api.storage.PrimaryStorageDownloadAnswer;
 import com.cloud.agent.api.storage.PrimaryStorageDownloadCommand;
 import com.cloud.agent.api.storage.ResizeVolumeAnswer;
@@ -1357,6 +1359,8 @@ public class LibvirtComputingResource extends ServerResourceBase implements Serv
                 return execute((DeleteStoragePoolCommand)cmd);
             } else if (cmd instanceof FenceCommand) {
                 return execute((FenceCommand)cmd);
+            } else if (cmd instanceof MigrateVolumeCommand) {
+                return execute((MigrateVolumeCommand)cmd);
             } else if (cmd instanceof StartCommand) {
                 return execute((StartCommand)cmd);
             } else if (cmd instanceof PlugNicCommand) {
@@ -1723,6 +1727,47 @@ public class LibvirtComputingResource extends ServerResourceBase implements Serv
             return new FenceAnswer(cmd, false, e.getMessage());
         }
 
+    }
+
+    protected MigrateVolumeAnswer execute(MigrateVolumeCommand cmd) {
+        KVMStoragePoolManager storagePoolManager = _storagePoolMgr;
+
+        VolumeObjectTO destVolumeObjectTO = (VolumeObjectTO)cmd.getDestData();
+        PrimaryDataStoreTO destPrimaryDataStore = (PrimaryDataStoreTO)destVolumeObjectTO.getDataStore();
+
+        Map<String, String> details = cmd.getDetails();
+
+        String path = details != null && details.get(DiskTO.IQN) != null ? details.get(DiskTO.IQN) : destVolumeObjectTO.getPath();
+
+        try {
+            VolumeObjectTO srcVolumeObjectTO = (VolumeObjectTO)cmd.getSrcData();
+            PrimaryDataStoreTO srcPrimaryDataStore = (PrimaryDataStoreTO)srcVolumeObjectTO.getDataStore();
+
+            final KVMPhysicalDisk sourceVolume = storagePoolManager.getPhysicalDisk(srcPrimaryDataStore.getPoolType(), srcPrimaryDataStore.getUuid(),
+                    srcVolumeObjectTO.getPath());
+
+            sourceVolume.setFormat(QemuImg.PhysicalDiskFormat.valueOf(srcVolumeObjectTO.getFormat().toString()));
+
+            KVMStoragePool destPrimaryStorage = storagePoolManager.getStoragePool(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid());
+
+            storagePoolManager.connectPhysicalDisk(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid(), path, details);
+
+            storagePoolManager.copyPhysicalDisk(sourceVolume, path, destPrimaryStorage, cmd.getWaitInMillSeconds());
+
+            storagePoolManager.disconnectPhysicalDisk(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid(), path);
+        }
+        catch (Exception ex) {
+            try {
+                storagePoolManager.disconnectPhysicalDisk(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid(), path);
+            }
+            finally {
+                s_logger.warn("Unable to disconnect from the device.");
+            }
+
+            return new MigrateVolumeAnswer(cmd, false, ex.getMessage(), null);
+        }
+
+        return new MigrateVolumeAnswer(cmd, true, null, null);
     }
 
     protected Answer execute(CheckOnHostCommand cmd) {

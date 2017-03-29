@@ -1342,11 +1342,16 @@ public class ManagementServerImpl extends ManagerBase implements ManagementServe
         // Get all the pools available. Only shared pools are considered because only a volume on a shared pools
         // can be live migrated while the virtual machine stays on the same host.
         List<StoragePoolVO> storagePools = null;
-        if (srcVolumePool.getClusterId() == null) {
-            storagePools = _poolDao.findZoneWideStoragePoolsByTags(volume.getDataCenterId(), null);
-        } else {
+        if (srcVolumePool.getClusterId() != null) {
             storagePools = _poolDao.findPoolsByTags(volume.getDataCenterId(), srcVolumePool.getPodId(), srcVolumePool.getClusterId(), null);
         }
+        else {
+            storagePools = new ArrayList<>();
+        }
+
+        List<StoragePoolVO> zoneWideStoragePools = _poolDao.findZoneWideStoragePoolsByTags(volume.getDataCenterId(), null);
+
+        storagePools.addAll(zoneWideStoragePools);
 
         storagePools.remove(srcVolumePool);
         for (StoragePoolVO pool : storagePools) {

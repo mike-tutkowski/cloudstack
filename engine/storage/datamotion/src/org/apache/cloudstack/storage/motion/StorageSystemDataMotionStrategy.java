@@ -23,7 +23,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
-import java.util.concurrent.ExecutionException;
 
 import javax.inject.Inject;
 
@@ -55,6 +54,9 @@ import org.apache.log4j.Logger;
 import org.springframework.stereotype.Component;
 
 import com.cloud.agent.AgentManager;
+import com.cloud.agent.api.storage.MigrateVolumeAnswer;
+import com.cloud.agent.api.storage.MigrateVolumeCommand;
+import com.cloud.agent.api.to.DataTO;
 import com.cloud.agent.api.to.DiskTO;
 import com.cloud.agent.api.to.VirtualMachineTO;
 import com.cloud.configuration.Config;
@@ -67,6 +69,7 @@ import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.Storage.ImageFormat;
 import com.cloud.storage.VolumeDetailVO;
+import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.storage.dao.SnapshotDao;
@@ -74,7 +77,9 @@ import com.cloud.storage.dao.SnapshotDetailsDao;
 import com.cloud.storage.dao.SnapshotDetailsVO;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.storage.dao.VolumeDetailsDao;
+import com.cloud.utils.NumbersUtil;
 import com.cloud.utils.exception.CloudRuntimeException;
+import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachineManager;
 
 import com.google.common.base.Preconditions;
@@ -112,7 +117,28 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             return StrategyPriority.HIGHEST;
         }
 
+        if (srcData instanceof VolumeInfo && destData instanceof VolumeInfo) {
+            VolumeInfo srcVolumeInfo = (VolumeInfo)srcData;
+
+            if (isVolumeOnManagedStorage(srcVolumeInfo)) {
+                return StrategyPriority.HIGHEST;
+            }
+
+            VolumeInfo destVolumeInfo = (VolumeInfo)destData;
+
+            if (isVolumeOnManagedStorage(destVolumeInfo)) {
+                return StrategyPriority.HIGHEST;
+            }
+        }
+
         return StrategyPriority.CANT_HANDLE;
+    }
+
+    private boolean isVolumeOnManagedStorage(VolumeInfo volumeInfo) {
+        long storagePooldId = volumeInfo.getDataStore().getId();
+        StoragePoolVO storagePoolVO = _storagePoolDao.findById(storagePooldId);
+
+        return storagePoolVO.isManaged();
     }
 
     private boolean canHandle(DataObject dataObject) {
@@ -195,8 +221,16 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
                         LOGGER.warn(errMsg);
 
+                        invokeCallback(errMsg, callback);
+
                         throw new UnsupportedOperationException(errMsg);
                     }
+                }
+
+                if (canHandleDest) {
+                    handleCreateVolumeFromSnapshotOnSecondaryStorage(snapshotInfo, volumeInfo, callback);
+
+                    return null;
                 }
 
                 if (canHandleSrc) {
@@ -205,14 +239,7 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
                     LOGGER.warn(errMsg);
 
-                    throw new UnsupportedOperationException(errMsg);
-                }
-
-                if (canHandleDest) {
-                    String errMsg = "This operation is not supported (DataStoreCapabilities.STORAGE_SYSTEM_SNAPSHOT " +
-                            "not supported by source storage plug-in). " + getSrcDataStoreMsg(srcData);
-
-                    LOGGER.warn(errMsg);
+                    invokeCallback(errMsg, callback);
 
                     throw new UnsupportedOperationException(errMsg);
                 }
@@ -226,15 +253,85 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
                 LOGGER.warn(errMsg);
 
+                invokeCallback(errMsg, callback);
+
                 throw new UnsupportedOperationException(errMsg);
             }
 
             handleCreateVolumeFromTemplateBothOnStorageSystem((TemplateInfo)srcData, (VolumeInfo)destData, callback);
 
             return null;
+        } else if (srcData instanceof VolumeInfo && destData instanceof VolumeInfo) {
+            VolumeInfo srcVolumeInfo = (VolumeInfo)srcData;
+
+            if (srcVolumeInfo.getState() == Volume.State.Migrating) {
+                if (isVolumeOnManagedStorage(srcVolumeInfo)) {
+                    String errMsg = "The source volume to migrate is on managed storage. Migration in this case is not yet supported.";
+
+                    LOGGER.warn(errMsg);
+
+                    invokeCallback(errMsg, callback);
+
+                    throw new UnsupportedOperationException(errMsg);
+                }
+
+                VolumeInfo destVolumeInfo = (VolumeInfo)destData;
+
+                if (!isVolumeOnManagedStorage(destVolumeInfo)) {
+                    String errMsg = "The 'StorageSystemDataMotionStrategy' does not support this migration use case.";
+
+                    LOGGER.warn(errMsg);
+
+                    invokeCallback(errMsg, callback);
+
+                    throw new UnsupportedOperationException(errMsg);
+                }
+
+                handleVolumeMigrationFromNonManagedStorageToManagedStorage(srcVolumeInfo, destVolumeInfo, callback);
+
+                return null;
+            }
+            else if (srcVolumeInfo.getState() == Volume.State.Uploaded &&
+                     (srcData.getDataStore().getRole() == DataStoreRole.Image || srcData.getDataStore().getRole() == DataStoreRole.ImageCache) &&
+                     destData.getDataStore().getRole() == DataStoreRole.Primary) {
+                VolumeInfo destVolumeInfo = (VolumeInfo)destData;
+
+                ImageFormat imageFormat = destVolumeInfo.getFormat();
+
+                if (!ImageFormat.QCOW2.equals(imageFormat)) {
+                    String errMsg = "The 'StorageSystemDataMotionStrategy' does not support this upload use case (non KVM).";
+
+                    LOGGER.warn(errMsg);
+
+                    invokeCallback(errMsg, callback);
+
+                    throw new UnsupportedOperationException(errMsg);
+                }
+
+                handleCreateVolumeFromVolumeOnSecondaryStorage(srcVolumeInfo, destVolumeInfo, destVolumeInfo.getDataCenterId(),
+                        HypervisorType.KVM, callback);
+
+                return null;
+            }
         }
 
-        throw new UnsupportedOperationException("This operation is not supported.");
+        String errMsg = "This operation is not supported.";
+
+        LOGGER.warn(errMsg);
+
+        invokeCallback(errMsg, callback);
+
+        throw new UnsupportedOperationException(errMsg);
+    }
+
+    private void invokeCallback(String errMsg, AsyncCompletionCallback<CopyCommandResult> callback) {
+        CopyCmdAnswer copyCmdAnswer = new CopyCmdAnswer(errMsg);
+
+        CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
+
+        result.setResult(errMsg);
+
+        callback.complete(result);
     }
 
     private String getSrcDestDataStoreMsg(DataObject srcData, DataObject destData) {
@@ -266,19 +363,99 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
         }
     }
 
-    private void handleCreateTemplateFromSnapshot(SnapshotInfo snapshotInfo, TemplateInfo templateInfo, AsyncCompletionCallback<CopyCommandResult> callback) {
+    private void handleVolumeMigrationFromNonManagedStorageToManagedStorage(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo,
+                                                                            AsyncCompletionCallback<CopyCommandResult> callback) {
+        String errMsg = null;
+
         try {
-            snapshotInfo.processEvent(Event.CopyingRequested);
+            HypervisorType hypervisorType = srcVolumeInfo.getHypervisorType();
+
+            if (!HypervisorType.KVM.equals(hypervisorType)) {
+                throw new CloudRuntimeException("Currently, only the KVM hypervisor type is supported for the migration of a volume " +
+                        "from non-managed storage to managed storage.");
+            }
+
+            VirtualMachine vm = srcVolumeInfo.getAttachedVM();
+
+            if (vm != null && (vm.getState() != VirtualMachine.State.Stopped && vm.getState() != VirtualMachine.State.Migrating)) {
+                throw new CloudRuntimeException("Currently, if a volume to migrate from non-managed storage to managed storage is attached to " +
+                        "a VM, the VM must be in the Stopped state.");
+            }
+
+            destVolumeInfo.getDataStore().getDriver().createAsync(destVolumeInfo.getDataStore(), destVolumeInfo, null);
+
+            VolumeVO volumeVO = _volumeDao.findById(destVolumeInfo.getId());
+
+            volumeVO.setPath(volumeVO.get_iScsiName());
+
+            _volumeDao.update(volumeVO.getId(), volumeVO);
+
+            destVolumeInfo = _volumeDataFactory.getVolume(destVolumeInfo.getId(), destVolumeInfo.getDataStore());
+
+            long srcStoragePoolId = srcVolumeInfo.getPoolId();
+            StoragePoolVO srcStoragePoolVO = _storagePoolDao.findById(srcStoragePoolId);
+
+            HostVO hostVO;
+
+            if (srcStoragePoolVO.getClusterId() != null) {
+                hostVO = getHostInCluster(srcStoragePoolVO.getClusterId());
+            }
+            else {
+                hostVO = getHost(destVolumeInfo.getDataCenterId(), hypervisorType);
+            }
+
+            // migrate the volume via the hypervisor
+            MigrateVolumeAnswer migrateVolumeAnswer = migrateVolume(srcVolumeInfo, destVolumeInfo, hostVO);
+
+            if (migrateVolumeAnswer == null || !migrateVolumeAnswer.getResult()) {
+                if (migrateVolumeAnswer != null && !StringUtils.isEmpty(migrateVolumeAnswer.getDetails())) {
+                    throw new CloudRuntimeException(migrateVolumeAnswer.getDetails());
+                }
+                else {
+                    throw new CloudRuntimeException("Unable to migrate the volume from non-managed storage to managed storage");
+                }
+            }
         }
         catch (Exception ex) {
-            throw new CloudRuntimeException("This snapshot is not currently in a state where it can be used to create a template.");
+            errMsg = "Migration operation failed in 'StorageSystemDataMotionStrategy.handleVolumeMigrationFromNonManagedStorageToManagedStorage': " +
+                    ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
         }
+        finally {
+            CopyCmdAnswer copyCmdAnswer;
 
-        HostVO hostVO = getHost(snapshotInfo.getDataCenterId());
+            if (errMsg != null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
+            else {
+                destVolumeInfo = _volumeDataFactory.getVolume(destVolumeInfo.getId(), destVolumeInfo.getDataStore());
 
-        boolean usingBackendSnapshot = usingBackendSnapshotFor(snapshotInfo);
+                DataTO dataTO = destVolumeInfo.getTO();
+
+                copyCmdAnswer = new CopyCmdAnswer(dataTO);
+            }
+
+            CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
+
+            result.setResult(errMsg);
+
+            callback.complete(result);
+        }
+    }
+
+    private void handleCreateTemplateFromSnapshot(SnapshotInfo snapshotInfo, TemplateInfo templateInfo, AsyncCompletionCallback<CopyCommandResult> callback) {
+        String errMsg = null;
+        CopyCmdAnswer copyCmdAnswer = null;
+        boolean usingBackendSnapshot = false;
 
         try {
+            snapshotInfo.processEvent(Event.CopyingRequested);
+
+            HostVO hostVO = getHost(snapshotInfo.getDataCenterId());
+
+            usingBackendSnapshot = usingBackendSnapshotFor(snapshotInfo);
+
             if (usingBackendSnapshot) {
                 createVolumeFromSnapshot(snapshotInfo);
             }
@@ -289,10 +466,6 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             int primaryStorageDownloadWait = NumberUtils.toInt(value, Integer.parseInt(Config.PrimaryStorageDownloadWait.getDefaultValue()));
             CopyCommand copyCommand = new CopyCommand(snapshotInfo.getTO(), templateInfo.getTO(), primaryStorageDownloadWait, VirtualMachineManager.ExecuteInSequence.value());
 
-            String errMsg = null;
-
-            CopyCmdAnswer copyCmdAnswer = null;
-
             try {
                 _volumeService.connectVolumeToHost(snapshotInfo, hostVO, srcDataStore);
 
@@ -301,6 +474,13 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
                 copyCommand.setOptions(srcDetails);
 
                 copyCmdAnswer = (CopyCmdAnswer)_agentMgr.send(hostVO.getId(), copyCommand);
+
+                if (!copyCmdAnswer.getResult()) {
+                    // We were not able to copy. Handle it.
+                    errMsg = copyCmdAnswer.getDetails();
+
+                    throw new CloudRuntimeException(errMsg);
+                }
             }
             catch (CloudRuntimeException | AgentUnavailableException | OperationTimedoutException ex) {
                 String msg = "Failed to create template from snapshot (Snapshot ID = " + snapshotInfo.getId() + ") : ";
@@ -338,6 +518,20 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
                     LOGGER.warn("Error processing snapshot event: " + ex.getMessage(), ex);
                 }
             }
+        }
+        catch (Exception ex) {
+            errMsg = ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
+        }
+        finally {
+            if (usingBackendSnapshot) {
+                deleteVolumeFromSnapshot(snapshotInfo);
+            }
+
+            if (copyCmdAnswer == null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
 
             CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
 
@@ -345,11 +539,58 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
             callback.complete(result);
         }
+    }
+
+    private Map<String, String> getVolumeDetails(VolumeInfo volumeInfo) {
+        Map<String, String> volumeDetails = new HashMap<>();
+
+        VolumeVO volumeVO = _volumeDao.findById(volumeInfo.getId());
+
+        long storagePoolId = volumeVO.getPoolId();
+        StoragePoolVO storagePoolVO = _storagePoolDao.findById(storagePoolId);
+
+        volumeDetails.put(DiskTO.STORAGE_HOST, storagePoolVO.getHostAddress());
+        volumeDetails.put(DiskTO.STORAGE_PORT, String.valueOf(storagePoolVO.getPort()));
+        volumeDetails.put(DiskTO.IQN, volumeVO.get_iScsiName());
+
+        volumeDetails.put(DiskTO.VOLUME_SIZE, String.valueOf(volumeVO.getSize()));
+
+        return volumeDetails;
+    }
+
+    private MigrateVolumeAnswer migrateVolume(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo, HostVO hostVO) {
+        MigrateVolumeAnswer migrateVolumeAnswer;
+
+        try {
+            String value = _configDao.getValue(Config.PrimaryStorageDownloadWait.toString());
+            int primaryStorageDownloadWait = NumbersUtil.parseInt(value, Integer.parseInt(Config.PrimaryStorageDownloadWait.getDefaultValue()));
+
+            Map<String, String> details = getVolumeDetails(destVolumeInfo);
+
+            MigrateVolumeCommand migrateVolumeCommand = new MigrateVolumeCommand(srcVolumeInfo.getTO(), destVolumeInfo.getTO(), details, primaryStorageDownloadWait);
+
+            _volumeService.connectVolumeToHost(destVolumeInfo, hostVO, destVolumeInfo.getDataStore());
+
+            migrateVolumeAnswer = (MigrateVolumeAnswer)_agentMgr.send(hostVO.getId(), migrateVolumeCommand);
+        }
+        catch (CloudRuntimeException | AgentUnavailableException | OperationTimedoutException ex) {
+            String msg = "Failed to perform volume migration : ";
+
+            LOGGER.warn(msg, ex);
+
+            throw new CloudRuntimeException(msg + ex.getMessage());
+        }
         finally {
-            if (usingBackendSnapshot) {
-                deleteVolumeFromSnapshot(snapshotInfo);
+            // If the source volume is attached to the volume, then keep the destination volume in the access control list.
+
+            VirtualMachine virtualMachine = srcVolumeInfo.getAttachedVM();
+
+            if (virtualMachine == null) {
+                _volumeService.disconnectVolumeFromHost(destVolumeInfo, hostVO, destVolumeInfo.getDataStore());
             }
         }
+
+        return migrateVolumeAnswer;
     }
 
     private boolean usingBackendSnapshotFor(SnapshotInfo snapshotInfo) {
@@ -359,8 +600,8 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
     }
 
     private void handleCreateVolumeFromSnapshotBothOnStorageSystem(SnapshotInfo snapshotInfo, VolumeInfo volumeInfo, AsyncCompletionCallback<CopyCommandResult> callback) {
-        CopyCmdAnswer copyCmdAnswer = null;
         String errMsg = null;
+        CopyCmdAnswer copyCmdAnswer = null;
 
         try {
             boolean useCloning = usingBackendSnapshotFor(snapshotInfo);
@@ -405,14 +646,22 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             copyCmdAnswer = new CopyCmdAnswer(newVolume);
         }
         catch (Exception ex) {
-            errMsg = ex.getMessage() != null ? ex.getMessage() : "Copy operation failed in 'StorageSystemDataMotionStrategy.handleCreateVolumeFromSnapshotBothOnStorageSystem'";
+            errMsg = "Copy operation failed in 'StorageSystemDataMotionStrategy.handleCreateVolumeFromSnapshotBothOnStorageSystem': " +
+                    ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
         }
+        finally {
+            if (copyCmdAnswer == null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
 
-        CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
+            CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
 
-        result.setResult(errMsg);
+            result.setResult(errMsg);
 
-        callback.complete(result);
+            callback.complete(result);
+        }
     }
 
     private Map<String, String> getSnapshotDetails(SnapshotInfo snapshotInfo) {
@@ -434,6 +683,39 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
         snapshotDetails.put(DiskTO.CHAP_TARGET_SECRET, getProperty(snapshotId, DiskTO.CHAP_TARGET_SECRET));
 
         return snapshotDetails;
+    }
+
+    private HostVO getHost(Long zoneId, HypervisorType hypervisorType) {
+        Preconditions.checkArgument(zoneId != null, "Zone ID cannot be null.");
+        Preconditions.checkArgument(hypervisorType != null, "Hypervisor type cannot be null.");
+
+        List<HostVO> hosts = _hostDao.listByDataCenterId(zoneId);
+
+        if (hosts == null) {
+            return null;
+        }
+
+        Collections.shuffle(hosts, RANDOM);
+
+        for (HostVO host : hosts) {
+            if (hypervisorType.equals(host.getHypervisorType())) {
+                return host;
+            }
+        }
+
+        return null;
+    }
+
+    private HostVO getHostInCluster(long clusterId) {
+        List<HostVO> hosts = _hostDao.findByClusterId(clusterId);
+
+        if (hosts != null && hosts.size() > 0) {
+            Collections.shuffle(hosts, RANDOM);
+
+            return hosts.get(0);
+        }
+
+        throw new CloudRuntimeException("Unable to locate a host");
     }
 
     private HostVO getHost(Long zoneId) {
@@ -540,6 +822,140 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
         return null;
     }
 
+    private void handleCreateVolumeFromSnapshotOnSecondaryStorage(SnapshotInfo snapshotInfo, VolumeInfo volumeInfo,
+                                                                  AsyncCompletionCallback<CopyCommandResult> callback) {
+        String errMsg = null;
+        CopyCmdAnswer copyCmdAnswer = null;
+
+        try {
+            // create a volume on the storage
+            AsyncCallFuture<VolumeApiResult> future = _volumeService.createVolumeAsync(volumeInfo, volumeInfo.getDataStore());
+            VolumeApiResult result = future.get();
+
+            if (result.isFailed()) {
+                LOGGER.error("Failed to create a volume: " + result.getResult());
+
+                throw new CloudRuntimeException(result.getResult());
+            }
+
+            volumeInfo = _volumeDataFactory.getVolume(volumeInfo.getId(), volumeInfo.getDataStore());
+            volumeInfo.processEvent(Event.MigrationRequested);
+            volumeInfo = _volumeDataFactory.getVolume(volumeInfo.getId(), volumeInfo.getDataStore());
+
+            HostVO hostVO = getHost(snapshotInfo.getDataCenterId(), snapshotInfo.getHypervisorType());
+
+            // copy the snapshot from secondary via the hypervisor
+            copyCmdAnswer = copyImageToVolume(snapshotInfo, volumeInfo, hostVO);
+
+            if (copyCmdAnswer == null || !copyCmdAnswer.getResult()) {
+                if (copyCmdAnswer != null && !StringUtils.isEmpty(copyCmdAnswer.getDetails())) {
+                    throw new CloudRuntimeException(copyCmdAnswer.getDetails());
+                }
+                else {
+                    throw new CloudRuntimeException("Unable to create volume from snapshot");
+                }
+            }
+        }
+        catch (Exception ex) {
+            errMsg = "Copy operation failed in 'StorageSystemDataMotionStrategy.handleCreateVolumeFromSnapshotOnSecondaryStorage': " +
+                    ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
+        }
+        finally {
+            if (copyCmdAnswer == null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
+
+            CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
+
+            result.setResult(errMsg);
+
+            callback.complete(result);
+        }
+    }
+
+    private void handleCreateVolumeFromVolumeOnSecondaryStorage(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo,
+                                                                long dataCenterId, HypervisorType hypervisorType,
+                                                                AsyncCompletionCallback<CopyCommandResult> callback) {
+        String errMsg = null;
+        CopyCmdAnswer copyCmdAnswer = null;
+
+        try {
+            // create a volume on the storage
+            destVolumeInfo.getDataStore().getDriver().createAsync(destVolumeInfo.getDataStore(), destVolumeInfo, null);
+
+            destVolumeInfo = _volumeDataFactory.getVolume(destVolumeInfo.getId(), destVolumeInfo.getDataStore());
+
+            HostVO hostVO = getHost(dataCenterId, hypervisorType);
+
+            // copy the volume from secondary via the hypervisor
+            copyCmdAnswer = copyImageToVolume(srcVolumeInfo, destVolumeInfo, hostVO);
+
+            if (copyCmdAnswer == null || !copyCmdAnswer.getResult()) {
+                if (copyCmdAnswer != null && !StringUtils.isEmpty(copyCmdAnswer.getDetails())) {
+                    throw new CloudRuntimeException(copyCmdAnswer.getDetails());
+                }
+                else {
+                    throw new CloudRuntimeException("Unable to create volume from volume");
+                }
+            }
+        }
+        catch (Exception ex) {
+            errMsg = "Copy operation failed in 'StorageSystemDataMotionStrategy.handleCreateVolumeFromVolumeOnSecondaryStorage': " +
+                    ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
+        }
+        finally {
+            if (copyCmdAnswer == null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
+
+            CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
+
+            result.setResult(errMsg);
+
+            callback.complete(result);
+        }
+    }
+
+    private CopyCmdAnswer copyImageToVolume(DataObject srcDataObject, VolumeInfo destVolumeInfo, HostVO hostVO) {
+        String value = _configDao.getValue(Config.PrimaryStorageDownloadWait.toString());
+        int primaryStorageDownloadWait = NumbersUtil.parseInt(value, Integer.parseInt(Config.PrimaryStorageDownloadWait.getDefaultValue()));
+
+        CopyCommand copyCommand = new CopyCommand(srcDataObject.getTO(), destVolumeInfo.getTO(), primaryStorageDownloadWait,
+                VirtualMachineManager.ExecuteInSequence.value());
+
+        CopyCmdAnswer copyCmdAnswer;
+
+        try {
+            _volumeService.connectVolumeToHost(destVolumeInfo, hostVO, destVolumeInfo.getDataStore());
+
+            Map<String, String> destDetails = getVolumeDetails(destVolumeInfo);
+
+            copyCommand.setOptions2(destDetails);
+
+            copyCmdAnswer = (CopyCmdAnswer)_agentMgr.send(hostVO.getId(), copyCommand);
+        }
+        catch (CloudRuntimeException | AgentUnavailableException | OperationTimedoutException ex) {
+            String msg = "Failed to copy image : ";
+
+            LOGGER.warn(msg, ex);
+
+            throw new CloudRuntimeException(msg + ex.getMessage());
+        }
+        finally {
+            _volumeService.disconnectVolumeFromHost(destVolumeInfo, hostVO, destVolumeInfo.getDataStore());
+        }
+
+        VolumeObjectTO volumeObjectTO = (VolumeObjectTO)copyCmdAnswer.getNewData();
+
+        volumeObjectTO.setFormat(ImageFormat.QCOW2);
+
+        return copyCmdAnswer;
+    }
+
     /**
      * Clones a template present on the storage to a new volume and resignatures it.
      *
@@ -548,10 +964,15 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
      * @param callback  for async
      */
     private void handleCreateVolumeFromTemplateBothOnStorageSystem(TemplateInfo templateInfo, VolumeInfo volumeInfo, AsyncCompletionCallback<CopyCommandResult> callback) {
-        Preconditions.checkArgument(templateInfo != null, "Passing 'null' to templateInfo of handleCreateVolumeFromTemplateBothOnStorageSystem is not supported.");
-        Preconditions.checkArgument(volumeInfo != null, "Passing 'null' to volumeInfo of handleCreateVolumeFromTemplateBothOnStorageSystem is not supported.");
+        String errMsg = null;
+        CopyCmdAnswer copyCmdAnswer = null;
 
         try {
+            Preconditions.checkArgument(templateInfo != null, "Passing 'null' to templateInfo of " +
+                    "handleCreateVolumeFromTemplateBothOnStorageSystem is not supported.");
+            Preconditions.checkArgument(volumeInfo != null, "Passing 'null' to volumeInfo of " +
+                    "handleCreateVolumeFromTemplateBothOnStorageSystem is not supported.");
+
             VolumeDetailVO volumeDetail = new VolumeDetailVO(volumeInfo.getId(),
                     "cloneOfTemplate",
                     String.valueOf(templateInfo.getId()),
@@ -577,22 +998,36 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             volumeInfo.processEvent(Event.MigrationRequested);
 
             volumeInfo = _volumeDataFactory.getVolume(volumeInfo.getId(), volumeInfo.getDataStore());
-        } catch (InterruptedException | ExecutionException ex) {
-            volumeInfo.getDataStore().getDriver().deleteAsync(volumeInfo.getDataStore(), volumeInfo, null);
 
-            throw new CloudRuntimeException("Create volume from template (ID = " + templateInfo.getId() + ") failed " + ex.getMessage());
+            VolumeObjectTO newVolume = new VolumeObjectTO();
+
+            newVolume.setSize(volumeInfo.getSize());
+            newVolume.setPath(volumeInfo.getPath());
+            newVolume.setFormat(volumeInfo.getFormat());
+
+            copyCmdAnswer = new CopyCmdAnswer(newVolume);
+        } catch (Exception ex) {
+            try {
+                volumeInfo.getDataStore().getDriver().deleteAsync(volumeInfo.getDataStore(), volumeInfo, null);
+            }
+            catch (Exception exc) {
+                LOGGER.warn("Failed to delete volume", exc);
+            }
+
+            errMsg = "Create volume from template (ID = " + templateInfo.getId() + ") failed: " + ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
         }
+        finally {
+            if (copyCmdAnswer == null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
 
-        VolumeObjectTO newVolume = new VolumeObjectTO();
+            CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
 
-        newVolume.setSize(volumeInfo.getSize());
-        newVolume.setPath(volumeInfo.getPath());
-        newVolume.setFormat(volumeInfo.getFormat());
+            result.setResult(errMsg);
 
-        CopyCommandResult result = new CopyCommandResult(null, new CopyCmdAnswer(newVolume));
-
-        result.setResult(null);
-
-        callback.complete(result);
+            callback.complete(result);
+        }
     }
 }

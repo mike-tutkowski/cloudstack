@@ -30,10 +30,15 @@ import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotResult;
 import org.apache.cloudstack.engine.subsystem.api.storage.StrategyPriority;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
+import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreVO;
+import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 
 import org.springframework.stereotype.Component;
 
 import com.cloud.exception.InvalidParameterValueException;
+import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.Snapshot;
 import com.cloud.storage.SnapshotVO;
@@ -53,9 +58,11 @@ public class StorageSystemSnapshotStrategy extends SnapshotStrategyBase {
     private static final Logger s_logger = Logger.getLogger(StorageSystemSnapshotStrategy.class);
 
     @Inject private DataStoreManager dataStoreMgr;
+    @Inject private PrimaryDataStoreDao storagePoolDao;
     @Inject private SnapshotDao snapshotDao;
     @Inject private SnapshotDataFactory snapshotDataFactory;
     @Inject private SnapshotDetailsDao snapshotDetailsDao;
+    @Inject SnapshotDataStoreDao snapshotStoreDao;
     @Inject private VolumeDao volumeDao;
 
     @Override
@@ -125,12 +132,21 @@ public class StorageSystemSnapshotStrategy extends SnapshotStrategyBase {
         return true;
     }
 
+    private void verifySnapshotType(SnapshotInfo snapshotInfo) {
+        if (snapshotInfo.getHypervisorType() == HypervisorType.KVM && snapshotInfo.getDataStore().getRole() != DataStoreRole.Primary) {
+            throw new CloudRuntimeException("For the KVM hypervisor type, you can only revert a volume to a snapshot state if the snapshot " +
+                    "resides on primary storage. For other snapshot types, create a volume from the snapshot to recover its data.");
+        }
+    }
+
     @Override
     public boolean revertSnapshot(Long snapshotId) {
         SnapshotVO snapshotVO = snapshotDao.findById(snapshotId);
         VolumeVO volumeVO = volumeDao.findById(snapshotVO.getVolumeId());
         DataStore dataStore = dataStoreMgr.getPrimaryDataStore(volumeVO.getPoolId());
         SnapshotInfo snapshotInfo = snapshotDataFactory.getSnapshot(snapshotVO.getId(), dataStore);
+
+        verifySnapshotType(snapshotInfo);
 
         VolumeInfo volumeInfo = snapshotInfo.getBaseVolume();
 
@@ -287,6 +303,15 @@ public class StorageSystemSnapshotStrategy extends SnapshotStrategyBase {
 
     @Override
     public StrategyPriority canHandle(Snapshot snapshot, SnapshotOperation op) {
+        // If the snapshot exists on Secondary Storage, we can't delete it.
+        if (SnapshotOperation.DELETE.equals(op)) {
+            SnapshotDataStoreVO snapshotStore = snapshotStoreDao.findBySnapshot(snapshot.getId(), DataStoreRole.Image);
+
+            if (snapshotStore != null) {
+                return StrategyPriority.CANT_HANDLE;
+            }
+        }
+
         long volumeId = snapshot.getVolumeId();
 
         VolumeVO volumeVO = volumeDao.findByIdIncludingRemoved(volumeId);
@@ -306,6 +331,13 @@ public class StorageSystemSnapshotStrategy extends SnapshotStrategyBase {
                         boolean storageSystemSupportsCapability = storageSystemSupportsCapability(storagePoolId, DataStoreCapabilities.CAN_REVERT_VOLUME_TO_SNAPSHOT.toString());
 
                         if (storageSystemSupportsCapability) {
+                            return StrategyPriority.HIGHEST;
+                        }
+                    }
+                    else {
+                        StoragePoolVO storagePoolVO = storagePoolDao.findById(storagePoolId);
+
+                        if (storagePoolVO.isManaged()) {
                             return StrategyPriority.HIGHEST;
                         }
                     }

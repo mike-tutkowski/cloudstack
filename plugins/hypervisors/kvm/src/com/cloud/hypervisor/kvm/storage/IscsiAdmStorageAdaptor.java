@@ -361,7 +361,16 @@ public class IscsiAdmStorageAdaptor implements StorageAdaptor {
     public KVMPhysicalDisk copyPhysicalDisk(KVMPhysicalDisk srcDisk, String destVolumeUuid, KVMStoragePool destPool, int timeout) {
         QemuImg q = new QemuImg(timeout);
 
-        QemuImgFile srcFile = new QemuImgFile(srcDisk.getPath(), srcDisk.getFormat());
+        QemuImgFile srcFile;
+
+        KVMStoragePool srcPool = srcDisk.getPool();
+
+        if (srcPool.getType() == StoragePoolType.RBD) {
+            srcFile = new QemuImgFile(KVMPhysicalDisk.RBDStringBuilder(srcPool.getSourceHost(), srcPool.getSourcePort(),
+                    srcPool.getAuthUserName(), srcPool.getAuthSecret(), srcDisk.getPath()),srcDisk.getFormat());
+        } else {
+            srcFile = new QemuImgFile(srcDisk.getPath(), srcDisk.getFormat());
+        }
 
         KVMPhysicalDisk destDisk = destPool.getPhysicalDisk(destVolumeUuid);
 
