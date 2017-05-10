@@ -18,11 +18,14 @@
  */
 package org.apache.cloudstack.storage.motion;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 import javax.inject.Inject;
 
@@ -48,12 +51,19 @@ import org.apache.commons.lang.math.NumberUtils;
 import org.apache.cloudstack.storage.command.CopyCmdAnswer;
 import org.apache.cloudstack.storage.command.CopyCommand;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.storage.to.VolumeObjectTO;
 import org.apache.log4j.Logger;
 import org.springframework.stereotype.Component;
 
 import com.cloud.agent.AgentManager;
+import com.cloud.agent.api.Answer;
+import com.cloud.agent.api.MigrateAnswer;
+import com.cloud.agent.api.MigrateCommand;
+import com.cloud.agent.api.ModifyTargetsAnswer;
+import com.cloud.agent.api.ModifyTargetsCommand;
+import com.cloud.agent.api.PrepareForMigrationCommand;
 import com.cloud.agent.api.storage.MigrateVolumeAnswer;
 import com.cloud.agent.api.storage.MigrateVolumeCommand;
 import com.cloud.agent.api.to.DataTO;
@@ -72,6 +82,8 @@ import com.cloud.storage.VolumeDetailVO;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
+import com.cloud.storage.dao.GuestOSCategoryDao;
+import com.cloud.storage.dao.GuestOSDao;
 import com.cloud.storage.dao.SnapshotDao;
 import com.cloud.storage.dao.SnapshotDetailsDao;
 import com.cloud.storage.dao.SnapshotDetailsVO;
@@ -81,6 +93,8 @@ import com.cloud.utils.NumbersUtil;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachineManager;
+import com.cloud.vm.VMInstanceVO;
+import com.cloud.vm.dao.VMInstanceDao;
 
 import com.google.common.base.Preconditions;
 
@@ -93,10 +107,14 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
     @Inject private ConfigurationDao _configDao;
     @Inject private DataStoreManager dataStoreMgr;
     @Inject private DiskOfferingDao _diskOfferingDao;
+    @Inject private GuestOSCategoryDao _guestOsCategoryDao;
+    @Inject private GuestOSDao _guestOsDao;
     @Inject private HostDao _hostDao;
     @Inject private PrimaryDataStoreDao _storagePoolDao;
     @Inject private SnapshotDao _snapshotDao;
+    @Inject private SnapshotDataStoreDao _snapshotDataStoreDao;
     @Inject private SnapshotDetailsDao _snapshotDetailsDao;
+    @Inject private VMInstanceDao _vmDao;
     @Inject private VolumeDataFactory _volumeDataFactory;
     @Inject private VolumeDetailsDao _volumeDetailsDao;
     @Inject private VolumeDao _volumeDao;
@@ -180,6 +198,26 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
     @Override
     public StrategyPriority canHandle(Map<VolumeInfo, DataStore> volumeMap, Host srcHost, Host destHost) {
+        Set<VolumeInfo> volumeInfoSet = volumeMap.keySet();
+
+        for (VolumeInfo volumeInfo : volumeInfoSet) {
+            StoragePoolVO storagePoolVO = _storagePoolDao.findById(volumeInfo.getPoolId());
+
+            if (storagePoolVO.isManaged()) {
+                return StrategyPriority.HIGHEST;
+            }
+        }
+
+        Collection<DataStore> dataStores = volumeMap.values();
+
+        for (DataStore dataStore : dataStores) {
+            StoragePoolVO storagePoolVO = _storagePoolDao.findById(dataStore.getId());
+
+            if (storagePoolVO.isManaged()) {
+                return StrategyPriority.HIGHEST;
+            }
+        }
+
         return StrategyPriority.CANT_HANDLE;
     }
 
@@ -811,15 +849,322 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
         return null;
     }
 
+    /**
+     * For each disk to migrate:
+     *   Create a volume on the target storage system.
+     *   Make the newly created volume accessible to the target KVM host.
+     *   Send a command to the target KVM host to connect to the newly created volume.
+     * Send a command to the source KVM host to migrate the VM and its storage.
+     */
     @Override
-    public Void copyAsync(Map<VolumeInfo, DataStore> volumeMap, VirtualMachineTO vmTo, Host srcHost, Host destHost, AsyncCompletionCallback<CopyCommandResult> callback) {
-        CopyCommandResult result = new CopyCommandResult(null, null);
+    public Void copyAsync(Map<VolumeInfo, DataStore> volumeDataStoreMap, VirtualMachineTO vmTO, Host srcHost, Host destHost, AsyncCompletionCallback<CopyCommandResult> callback) {
+        String errMsg = null;
+        CopyCmdAnswer copyCmdAnswer = null;
 
-        result.setResult("Unsupported operation requested for copying data.");
+        try {
+            if (srcHost.getHypervisorType() != HypervisorType.KVM) {
+                throw new CloudRuntimeException("Invalid hypervisor type (only KVM supported for this operation at the time being)");
+            }
 
-        callback.complete(result);
+            verifyLiveMigrationMapForKVM(volumeDataStoreMap);
+
+            Map<String, MigrateCommand.MigrateDiskInfo> migrateStorage = new HashMap<>();
+            Map<VolumeInfo, VolumeInfo> srcVolumeInfoToDestVolumeInfo = new HashMap<>();
+
+            for (Map.Entry<VolumeInfo, DataStore> entry : volumeDataStoreMap.entrySet()) {
+                VolumeInfo srcVolumeInfo = entry.getKey();
+                DataStore destDataStore = entry.getValue();
+
+                VolumeVO srcVolume = _volumeDao.findById(srcVolumeInfo.getId());
+                StoragePoolVO destStoragePool = _storagePoolDao.findById(destDataStore.getId());
+
+                VolumeVO destVolume = duplicateVolumeOnAnotherStorage(srcVolume, destStoragePool);
+                VolumeInfo destVolumeInfo = _volumeDataFactory.getVolume(destVolume.getId(), destDataStore);
+
+                // move the volume from Allocated to Creating
+                destVolumeInfo.processEvent(Event.MigrationCopyRequested);
+                // move the volume from Creating to Ready
+                destVolumeInfo.processEvent(Event.MigrationCopySucceeded);
+                // move the volume from Ready to Migrating
+                destVolumeInfo.processEvent(Event.MigrationRequested);
+
+                // create a volume on the destination storage
+                destDataStore.getDriver().createAsync(destDataStore, destVolumeInfo, null);
+
+                destVolume = _volumeDao.findById(destVolume.getId());
+
+                destVolume.setPath(destVolume.get_iScsiName());
+
+                _volumeDao.update(destVolume.getId(), destVolume);
+
+                destVolumeInfo = _volumeDataFactory.getVolume(destVolume.getId(), destDataStore);
+
+                _volumeService.grantAccess(destVolumeInfo, destHost, destDataStore);
+
+                String connectedPath = connectHostToVolume(destHost, destVolumeInfo);
+
+                // Use the srcVolumeInfo's UUID here because it has not yet been transferred to the destVolumeInfo.
+                String diskSerialNumber = getDiskSerialNumber(srcVolumeInfo.getUuid());
+
+                MigrateCommand.MigrateDiskInfo migrateDiskInfo = new MigrateCommand.MigrateDiskInfo(diskSerialNumber,
+                        MigrateCommand.MigrateDiskInfo.DiskType.BLOCK,
+                        MigrateCommand.MigrateDiskInfo.DriverType.RAW,
+                        MigrateCommand.MigrateDiskInfo.Source.DEV,
+                        connectedPath);
+
+                migrateStorage.put(diskSerialNumber, migrateDiskInfo);
+
+                srcVolumeInfoToDestVolumeInfo.put(srcVolumeInfo, destVolumeInfo);
+            }
+
+            PrepareForMigrationCommand pfmc = new PrepareForMigrationCommand(vmTO);
+
+            try {
+                Answer pfma = _agentMgr.send(destHost.getId(), pfmc);
+
+                if (pfma == null || !pfma.getResult()) {
+                    String details = pfma != null ? pfma.getDetails() : "null answer returned";
+                    String msg = "Unable to prepare for migration due to the following: " + details;
+
+                    throw new AgentUnavailableException(msg, destHost.getId());
+                }
+            }
+            catch (final OperationTimedoutException e) {
+                throw new AgentUnavailableException("Operation timed out", destHost.getId());
+            }
+
+            VMInstanceVO vm = _vmDao.findById(vmTO.getId());
+            boolean isWindows = _guestOsCategoryDao.findById(_guestOsDao.findById(vm.getGuestOSId()).getCategoryId()).getName().equalsIgnoreCase("Windows");
+
+            MigrateCommand migrateCommand = new MigrateCommand(vmTO.getName(), destHost.getPrivateIpAddress(), isWindows, vmTO, true);
+
+            migrateCommand.setMigrateStorage(migrateStorage);
+
+            MigrateAnswer migrateAnswer = (MigrateAnswer)_agentMgr.send(srcHost.getId(), migrateCommand);
+
+            boolean success = migrateAnswer != null && migrateAnswer.getResult();
+
+            handlePostMigration(success, srcVolumeInfoToDestVolumeInfo, vmTO, destHost);
+
+            if (migrateAnswer == null) {
+                throw new CloudRuntimeException("Unable to get an answer to the migrate command");
+            }
+
+            if (!migrateAnswer.getResult()) {
+                errMsg = migrateAnswer.getDetails();
+
+                throw new CloudRuntimeException(errMsg);
+            }
+        }
+        catch (Exception ex) {
+            errMsg = "Copy operation failed in 'StorageSystemDataMotionStrategy.copyAsync': " + ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
+        }
+        finally {
+            if (copyCmdAnswer == null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
+
+            CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
+
+            result.setResult(errMsg);
+
+            callback.complete(result);
+        }
 
         return null;
+    }
+
+    private void handlePostMigration(boolean success, Map<VolumeInfo, VolumeInfo> srcVolumeInfoToDestVolumeInfo, VirtualMachineTO vmTO, Host destHost) {
+        if (!success) {
+            try {
+                PrepareForMigrationCommand pfmc = new PrepareForMigrationCommand(vmTO);
+
+                pfmc.setRollback(true);
+
+                Answer pfma = _agentMgr.send(destHost.getId(), pfmc);
+
+                if (pfma == null || !pfma.getResult()) {
+                    String details = pfma != null ? pfma.getDetails() : "null answer returned";
+                    String msg = "Unable to rollback prepare for migration due to the following: " + details;
+
+                    throw new AgentUnavailableException(msg, destHost.getId());
+                }
+            }
+            catch (Exception e) {
+                LOGGER.debug("Failed to disconnect one or more (original) dest volumes", e);
+            }
+        }
+
+        for (Map.Entry<VolumeInfo, VolumeInfo> entry : srcVolumeInfoToDestVolumeInfo.entrySet()) {
+            VolumeInfo srcVolumeInfo = entry.getKey();
+            VolumeInfo destVolumeInfo = entry.getValue();
+
+            if (success) {
+                srcVolumeInfo.processEvent(Event.OperationSuccessed);
+                destVolumeInfo.processEvent(Event.OperationSuccessed);
+
+                _volumeDao.updateUuid(srcVolumeInfo.getId(), destVolumeInfo.getId());
+
+                try {
+                    _volumeService.destroyVolume(srcVolumeInfo.getId());
+
+                    srcVolumeInfo = _volumeDataFactory.getVolume(srcVolumeInfo.getId());
+
+                    AsyncCallFuture<VolumeApiResult> destroyFuture = _volumeService.expungeVolumeAsync(srcVolumeInfo);
+
+                    if (destroyFuture.get().isFailed()) {
+                        LOGGER.debug("Failed to clean up source volume on storage");
+                    }
+                } catch (Exception e) {
+                    LOGGER.debug("Failed to clean up source volume on storage", e);
+                }
+
+                // Update the volume ID for snapshots on secondary storage
+                if (!_snapshotDao.listByVolumeId(srcVolumeInfo.getId()).isEmpty()) {
+                    _snapshotDao.updateVolumeIds(srcVolumeInfo.getId(), destVolumeInfo.getId());
+                    _snapshotDataStoreDao.updateVolumeIds(srcVolumeInfo.getId(), destVolumeInfo.getId());
+                }
+            }
+            else {
+                try {
+                    disconnectHostFromVolume(destHost, destVolumeInfo);
+                }
+                catch (Exception e) {
+                    LOGGER.debug("Failed to disconnect (new) dest volume", e);
+                }
+
+                try {
+                    _volumeService.revokeAccess(destVolumeInfo, destHost, destVolumeInfo.getDataStore());
+                }
+                catch (Exception e) {
+                    LOGGER.debug("Failed to revoke access from dest volume", e);
+                }
+
+                destVolumeInfo.processEvent(Event.OperationFailed);
+                srcVolumeInfo.processEvent(Event.OperationFailed);
+
+                try {
+                    _volumeService.destroyVolume(destVolumeInfo.getId());
+
+                    destVolumeInfo = _volumeDataFactory.getVolume(destVolumeInfo.getId());
+
+                    AsyncCallFuture<VolumeApiResult> destroyFuture = _volumeService.expungeVolumeAsync(destVolumeInfo);
+
+                    if (destroyFuture.get().isFailed()) {
+                        LOGGER.debug("Failed to clean up dest volume on storage");
+                    }
+                } catch (Exception e) {
+                    LOGGER.debug("Failed to clean up dest volume on storage", e);
+                }
+            }
+        }
+    }
+
+    private VolumeVO duplicateVolumeOnAnotherStorage(Volume volume, StoragePoolVO storagePoolVO) {
+        Long lastPoolId = volume.getPoolId();
+
+        VolumeVO newVol = new VolumeVO(volume);
+
+        newVol.setInstanceId(null);
+        newVol.setChainInfo(null);
+        newVol.setPath(null);
+        newVol.setFolder(null);
+        newVol.setPodId(storagePoolVO.getPodId());
+        newVol.setPoolId(storagePoolVO.getId());
+        newVol.setLastPoolId(lastPoolId);
+
+        return _volumeDao.persist(newVol);
+    }
+
+    private String connectHostToVolume(Host host, VolumeInfo volumeInfo) {
+        ModifyTargetsCommand modifyTargetsCommand = getModifyTargetsCommand(volumeInfo, true);
+
+        return sendModifyTargetsCommand(modifyTargetsCommand, host.getId()).get(0);
+    }
+
+    private void disconnectHostFromVolume(Host host, VolumeInfo volumeInfo) {
+        ModifyTargetsCommand modifyTargetsCommand = getModifyTargetsCommand(volumeInfo, false);
+
+        sendModifyTargetsCommand(modifyTargetsCommand, host.getId());
+    }
+
+    private ModifyTargetsCommand getModifyTargetsCommand(VolumeInfo volumeInfo, boolean add) {
+        StoragePoolVO storagePool = _storagePoolDao.findById(volumeInfo.getPoolId());
+
+        Map<String, String> details = new HashMap<>();
+
+        details.put(ModifyTargetsCommand.IQN, volumeInfo.get_iScsiName());
+        details.put(ModifyTargetsCommand.STORAGE_TYPE, storagePool.getPoolType().name());
+        details.put(ModifyTargetsCommand.STORAGE_UUID, storagePool.getUuid());
+        details.put(ModifyTargetsCommand.STORAGE_HOST, storagePool.getHostAddress());
+        details.put(ModifyTargetsCommand.STORAGE_PORT, String.valueOf(storagePool.getPort()));
+
+        ModifyTargetsCommand modifyTargetsCommand = new ModifyTargetsCommand();
+
+        modifyTargetsCommand.setAdd(add);
+
+        List<Map<String, String>> targets = new ArrayList<>();
+
+        targets.add(details);
+
+        modifyTargetsCommand.setTargets(targets);
+
+        return modifyTargetsCommand;
+    }
+
+    private List<String> sendModifyTargetsCommand(ModifyTargetsCommand cmd, long hostId) {
+        ModifyTargetsAnswer modifyTargetsAnswer = (ModifyTargetsAnswer)_agentMgr.easySend(hostId, cmd);
+
+        if (modifyTargetsAnswer == null) {
+            throw new CloudRuntimeException("Unable to get an answer to the modify targets command");
+        }
+
+        if (!modifyTargetsAnswer.getResult()) {
+            String msg = "Unable to modify targets on the following host: " + hostId;
+
+            throw new CloudRuntimeException(msg);
+        }
+
+        return modifyTargetsAnswer.getConnectedPaths();
+    }
+
+    private String getDiskSerialNumber(String uuid) {
+        String uuidWithoutHyphen = uuid.replace("-","");
+
+        return uuidWithoutHyphen.substring(0, Math.min(uuidWithoutHyphen.length(), 20));
+    }
+
+    /*
+     * At a high level: The source storage cannot be managed and the destination storage must be managed.
+     */
+    private void verifyLiveMigrationMapForKVM(Map<VolumeInfo, DataStore> volumeDataStoreMap) {
+        for (Map.Entry<VolumeInfo, DataStore> entry : volumeDataStoreMap.entrySet()) {
+            VolumeInfo volumeInfo = entry.getKey();
+
+            Long storagePoolId = volumeInfo.getPoolId();
+            StoragePoolVO srcStoragePoolVO = _storagePoolDao.findById(storagePoolId);
+
+            if (srcStoragePoolVO == null) {
+                throw new CloudRuntimeException("Volume with ID " + volumeInfo.getId() + " is not associated with a storage pool.");
+            }
+
+            if (srcStoragePoolVO.isManaged()) {
+                throw new CloudRuntimeException("Migrating a volume online with KVM from managed storage is not currently supported.");
+            }
+
+            DataStore dataStore = entry.getValue();
+            StoragePoolVO destStoragePoolVO = _storagePoolDao.findById(dataStore.getId());
+
+            if (destStoragePoolVO == null) {
+                throw new CloudRuntimeException("Destination storage pool with ID " + destStoragePoolVO.getId() + " was not located.");
+            }
+
+            if (!destStoragePoolVO.isManaged()) {
+                throw new CloudRuntimeException("Migrating a volume online with KVM can currently only be done when moving to managed storage.");
+            }
+        }
     }
 
     private void handleCreateVolumeFromSnapshotOnSecondaryStorage(SnapshotInfo snapshotInfo, VolumeInfo volumeInfo,

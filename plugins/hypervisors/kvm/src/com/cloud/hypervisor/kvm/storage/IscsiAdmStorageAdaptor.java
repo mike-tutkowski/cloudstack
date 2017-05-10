@@ -118,7 +118,7 @@ public class IscsiAdmStorageAdaptor implements StorageAdaptor {
             }
         }
 
-        // ex. sudo iscsiadm -m node -T iqn.2012-03.com.test:volume1 -p 192.168.233.10 --login
+        // ex. sudo iscsiadm -m node -T iqn.2012-03.com.test:volume1 -p 192.168.233.10:3260 --login
         iScsiAdmCmd = new Script(true, "iscsiadm", 0, s_logger);
 
         iScsiAdmCmd.add("-m", "node");
@@ -229,6 +229,9 @@ public class IscsiAdmStorageAdaptor implements StorageAdaptor {
 
             return 0;
         }
+        else {
+            s_logger.info("Successfully retrieved the size of device " + deviceByPath);
+        }
 
         return Long.parseLong(parser.getLine());
     }
@@ -258,7 +261,7 @@ public class IscsiAdmStorageAdaptor implements StorageAdaptor {
     public boolean disconnectPhysicalDisk(String host, int port, String iqn, String lun) {
         // use iscsiadm to log out of the iSCSI target and un-discover it
 
-        // ex. sudo iscsiadm -m node -T iqn.2012-03.com.test:volume1 -p 192.168.233.10 --logout
+        // ex. sudo iscsiadm -m node -T iqn.2012-03.com.test:volume1 -p 192.168.233.10:3260 --logout
         Script iScsiAdmCmd = new Script(true, "iscsiadm", 0, s_logger);
 
         iScsiAdmCmd.add("-m", "node");

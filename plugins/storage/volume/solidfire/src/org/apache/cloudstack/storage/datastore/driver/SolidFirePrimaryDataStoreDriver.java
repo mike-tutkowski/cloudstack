@@ -313,9 +313,8 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
         return Math.min((long)(maxIops * fClusterDefaultBurstIopsPercentOfMaxIops), SolidFireUtil.MAX_IOPS_PER_VOLUME);
     }
 
-    private SolidFireUtil.SolidFireVolume createSolidFireVolume(SolidFireUtil.SolidFireConnection sfConnection, DataObject dataObject, long sfAccountId) {
-        long storagePoolId = dataObject.getDataStore().getId();
-
+    private SolidFireUtil.SolidFireVolume createSolidFireVolume(SolidFireUtil.SolidFireConnection sfConnection, DataObject dataObject,
+                                                                long storagePoolId, long sfAccountId) {
         final Long minIops;
         final Long maxIops;
         final Long volumeSize;
@@ -612,7 +611,7 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
             }
         }
         else {
-            sfVolume = createSolidFireVolume(sfConnection, volumeInfo, sfAccountId);
+            sfVolume = createSolidFireVolume(sfConnection, volumeInfo, storagePoolId, sfAccountId);
         }
 
         String iqn = sfVolume.getIqn();
@@ -746,7 +745,7 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
 
         long sfAccountId = getCreateSolidFireAccountId(sfConnection, templateInfo.getAccountId(), storagePoolId);
 
-        SolidFireUtil.SolidFireVolume sfVolume = createSolidFireVolume(sfConnection, templateInfo, sfAccountId);
+        SolidFireUtil.SolidFireVolume sfVolume = createSolidFireVolume(sfConnection, templateInfo, storagePoolId, sfAccountId);
 
         String iqn = sfVolume.getIqn();
 

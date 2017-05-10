@@ -24,6 +24,8 @@ import java.util.Map;
 
 public class ModifyTargetsCommand extends Command {
     public static final String IQN = "iqn";
+    public static final String STORAGE_TYPE = "storageType";
+    public static final String STORAGE_UUID = "storageUuid";
     public static final String STORAGE_HOST = "storageHost";
     public static final String STORAGE_PORT = "storagePort";
     public static final String CHAP_NAME = "chapName";
