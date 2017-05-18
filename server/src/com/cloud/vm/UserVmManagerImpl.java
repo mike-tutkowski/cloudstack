@@ -4912,9 +4912,10 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     }
 
     private void handleManagedStorage(UserVmVO vm, VolumeVO root) {
-        if ( Volume.State.Allocated.equals(root.getState()) ){
+        if (Volume.State.Allocated.equals(root.getState())) {
             return;
         }
+
         StoragePoolVO storagePool = _storagePoolDao.findById(root.getPoolId());
 
         if (storagePool != null && storagePool.isManaged()) {
@@ -4947,7 +4948,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                     Map<String, String> details = primaryDataStore.getDetails();
 
                     if (details == null) {
-                        details = new HashMap<String, String>();
+                        details = new HashMap<>();
 
                         primaryDataStore.setDetails(details);
                     }
@@ -4956,33 +4957,38 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
                     cmd = new DeleteCommand(volumeInfo.getTO());
                 }
+                else if (host.getHypervisorType() == HypervisorType.KVM) {
+                    cmd = null;
+                }
                 else {
                     throw new CloudRuntimeException("This hypervisor type is not supported on managed storage for this command.");
                 }
 
-                Commands cmds = new Commands(Command.OnError.Stop);
+                if (cmd != null) {
+                    Commands cmds = new Commands(Command.OnError.Stop);
 
-                cmds.addCommand(cmd);
+                    cmds.addCommand(cmd);
 
-                try {
-                    _agentMgr.send(hostId, cmds);
-                }
-                catch (Exception ex) {
-                    throw new CloudRuntimeException(ex.getMessage());
-                }
+                    try {
+                        _agentMgr.send(hostId, cmds);
+                    } catch (Exception ex) {
+                        throw new CloudRuntimeException(ex.getMessage());
+                    }
 
-                if (!cmds.isSuccessful()) {
-                    for (Answer answer : cmds.getAnswers()) {
-                        if (!answer.getResult()) {
-                            s_logger.warn("Failed to reset vm due to: " + answer.getDetails());
+                    if (!cmds.isSuccessful()) {
+                        for (Answer answer : cmds.getAnswers()) {
+                            if (!answer.getResult()) {
+                                s_logger.warn("Failed to reset vm due to: " + answer.getDetails());
 
-                            throw new CloudRuntimeException("Unable to reset " + vm + " due to " + answer.getDetails());
+                                throw new CloudRuntimeException("Unable to reset " + vm + " due to " + answer.getDetails());
+                            }
                         }
                     }
                 }
 
                 // root.getPoolId() should be null if the VM we are detaching the disk from has never been started before
                 DataStore dataStore = root.getPoolId() != null ? _dataStoreMgr.getDataStore(root.getPoolId(), DataStoreRole.Primary) : null;
+
                 volumeMgr.disconnectVolumeFromHost(volFactory.getVolume(root.getId()), host, dataStore);
             }
         }
