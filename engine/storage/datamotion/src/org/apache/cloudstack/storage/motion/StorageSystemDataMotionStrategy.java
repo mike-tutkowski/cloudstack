@@ -301,19 +301,26 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             return null;
         } else if (srcData instanceof VolumeInfo && destData instanceof VolumeInfo) {
             VolumeInfo srcVolumeInfo = (VolumeInfo)srcData;
+            VolumeInfo destVolumeInfo = (VolumeInfo)destData;
 
             if (srcVolumeInfo.getState() == Volume.State.Migrating) {
                 if (isVolumeOnManagedStorage(srcVolumeInfo)) {
-                    String errMsg = "The source volume to migrate is on managed storage. Migration in this case is not yet supported.";
+                    if (!isVolumeOnManagedStorage(destVolumeInfo)) {
+                        handleVolumeMigrationFromManagedStorageToNonManagedStorage(srcVolumeInfo, destVolumeInfo, callback);
 
-                    LOGGER.warn(errMsg);
+                        return null;
+                    }
+                    else {
+                        String errMsg = "The source volume to migrate and the destination volume are both on managed storage. " +
+                                "Migration in this case is not yet supported.";
 
-                    invokeCallback(errMsg, callback);
+                        LOGGER.warn(errMsg);
 
-                    throw new UnsupportedOperationException(errMsg);
+                        invokeCallback(errMsg, callback);
+
+                        throw new UnsupportedOperationException(errMsg);
+                    }
                 }
-
-                VolumeInfo destVolumeInfo = (VolumeInfo)destData;
 
                 if (!isVolumeOnManagedStorage(destVolumeInfo)) {
                     String errMsg = "The 'StorageSystemDataMotionStrategy' does not support this migration use case.";
@@ -332,8 +339,6 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             else if (srcVolumeInfo.getState() == Volume.State.Uploaded &&
                      (srcData.getDataStore().getRole() == DataStoreRole.Image || srcData.getDataStore().getRole() == DataStoreRole.ImageCache) &&
                      destData.getDataStore().getRole() == DataStoreRole.Primary) {
-                VolumeInfo destVolumeInfo = (VolumeInfo)destData;
-
                 ImageFormat imageFormat = destVolumeInfo.getFormat();
 
                 if (!ImageFormat.QCOW2.equals(imageFormat)) {
@@ -401,6 +406,72 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
         }
     }
 
+    private void handleVolumeMigrationFromManagedStorageToNonManagedStorage(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo,
+                                                                            AsyncCompletionCallback<CopyCommandResult> callback) {
+        String errMsg = null;
+
+        try {
+            if (!ImageFormat.QCOW2.equals(srcVolumeInfo.getFormat())) {
+                throw new CloudRuntimeException("Currently, only the KVM hypervisor type is supported for the migration of a volume " +
+                        "from managed storage to non-managed storage.");
+            }
+
+            HypervisorType hypervisorType = HypervisorType.KVM;
+
+            VirtualMachine vm = srcVolumeInfo.getAttachedVM();
+
+            if (vm != null && (vm.getState() != VirtualMachine.State.Stopped && vm.getState() != VirtualMachine.State.Migrating)) {
+                throw new CloudRuntimeException("Currently, if a volume to migrate from managed storage to non-managed storage is attached to " +
+                        "a VM, the VM must be in the Stopped state.");
+            }
+
+            long destStoragePoolId = destVolumeInfo.getPoolId();
+            StoragePoolVO destStoragePoolVO = _storagePoolDao.findById(destStoragePoolId);
+
+            HostVO hostVO;
+
+            if (destStoragePoolVO.getClusterId() != null) {
+                hostVO = getHostInCluster(destStoragePoolVO.getClusterId());
+            }
+            else {
+                hostVO = getHost(destVolumeInfo.getDataCenterId(), hypervisorType);
+            }
+
+            setCertainVolumeValuesNull(destVolumeInfo.getId());
+
+            // migrate the volume via the hypervisor
+            String path = migrateVolume(srcVolumeInfo, destVolumeInfo, hostVO, "Unable to migrate the volume from managed storage to non-managed storage");
+
+            updateVolumePath(destVolumeInfo.getId(), path);
+        }
+        catch (Exception ex) {
+            errMsg = "Migration operation failed in 'StorageSystemDataMotionStrategy.handleVolumeMigrationFromManagedStorageToNonManagedStorage': " +
+                    ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
+        }
+        finally {
+            CopyCmdAnswer copyCmdAnswer;
+
+            if (errMsg != null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
+            else {
+                destVolumeInfo = _volumeDataFactory.getVolume(destVolumeInfo.getId(), destVolumeInfo.getDataStore());
+
+                DataTO dataTO = destVolumeInfo.getTO();
+
+                copyCmdAnswer = new CopyCmdAnswer(dataTO);
+            }
+
+            CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
+
+            result.setResult(errMsg);
+
+            callback.complete(result);
+        }
+    }
+
     private void handleVolumeMigrationFromNonManagedStorageToManagedStorage(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo,
                                                                             AsyncCompletionCallback<CopyCommandResult> callback) {
         String errMsg = null;
@@ -443,16 +514,7 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             }
 
             // migrate the volume via the hypervisor
-            MigrateVolumeAnswer migrateVolumeAnswer = migrateVolume(srcVolumeInfo, destVolumeInfo, hostVO);
-
-            if (migrateVolumeAnswer == null || !migrateVolumeAnswer.getResult()) {
-                if (migrateVolumeAnswer != null && !StringUtils.isEmpty(migrateVolumeAnswer.getDetails())) {
-                    throw new CloudRuntimeException(migrateVolumeAnswer.getDetails());
-                }
-                else {
-                    throw new CloudRuntimeException("Unable to migrate the volume from non-managed storage to managed storage");
-                }
-            }
+            migrateVolume(srcVolumeInfo, destVolumeInfo, hostVO, "Unable to migrate the volume from non-managed storage to managed storage");
         }
         catch (Exception ex) {
             errMsg = "Migration operation failed in 'StorageSystemDataMotionStrategy.handleVolumeMigrationFromNonManagedStorageToManagedStorage': " +
@@ -580,55 +642,108 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
     }
 
     private Map<String, String> getVolumeDetails(VolumeInfo volumeInfo) {
-        Map<String, String> volumeDetails = new HashMap<>();
-
-        VolumeVO volumeVO = _volumeDao.findById(volumeInfo.getId());
-
-        long storagePoolId = volumeVO.getPoolId();
+        long storagePoolId = volumeInfo.getPoolId();
         StoragePoolVO storagePoolVO = _storagePoolDao.findById(storagePoolId);
+
+        if (!storagePoolVO.isManaged()) {
+            return null;
+        }
+
+        Map<String, String> volumeDetails = new HashMap<>();
 
         volumeDetails.put(DiskTO.STORAGE_HOST, storagePoolVO.getHostAddress());
         volumeDetails.put(DiskTO.STORAGE_PORT, String.valueOf(storagePoolVO.getPort()));
-        volumeDetails.put(DiskTO.IQN, volumeVO.get_iScsiName());
 
+        VolumeVO volumeVO = _volumeDao.findById(volumeInfo.getId());
+
+        volumeDetails.put(DiskTO.IQN, volumeVO.get_iScsiName());
         volumeDetails.put(DiskTO.VOLUME_SIZE, String.valueOf(volumeVO.getSize()));
 
         return volumeDetails;
     }
 
-    private MigrateVolumeAnswer migrateVolume(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo, HostVO hostVO) {
-        MigrateVolumeAnswer migrateVolumeAnswer;
+    private String migrateVolume(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo, HostVO hostVO, String errMsg) {
+        boolean srcVolumeDetached = srcVolumeInfo.getAttachedVM() == null;
 
         try {
             String value = _configDao.getValue(Config.PrimaryStorageDownloadWait.toString());
             int primaryStorageDownloadWait = NumbersUtil.parseInt(value, Integer.parseInt(Config.PrimaryStorageDownloadWait.getDefaultValue()));
 
-            Map<String, String> details = getVolumeDetails(destVolumeInfo);
+            Map<String, String> srcDetails = getVolumeDetails(srcVolumeInfo);
+            Map<String, String> destDetails = getVolumeDetails(destVolumeInfo);
 
-            MigrateVolumeCommand migrateVolumeCommand = new MigrateVolumeCommand(srcVolumeInfo.getTO(), destVolumeInfo.getTO(), details, primaryStorageDownloadWait);
+            MigrateVolumeCommand migrateVolumeCommand = new MigrateVolumeCommand(srcVolumeInfo.getTO(), destVolumeInfo.getTO(),
+                    srcDetails, destDetails, primaryStorageDownloadWait);
+
+            if (srcVolumeDetached) {
+                _volumeService.grantAccess(srcVolumeInfo, hostVO, srcVolumeInfo.getDataStore());
+            }
 
             _volumeService.grantAccess(destVolumeInfo, hostVO, destVolumeInfo.getDataStore());
 
-            migrateVolumeAnswer = (MigrateVolumeAnswer)_agentMgr.send(hostVO.getId(), migrateVolumeCommand);
+            MigrateVolumeAnswer migrateVolumeAnswer = (MigrateVolumeAnswer)_agentMgr.send(hostVO.getId(), migrateVolumeCommand);
+
+            if (migrateVolumeAnswer == null || !migrateVolumeAnswer.getResult()) {
+                if (migrateVolumeAnswer != null && !StringUtils.isEmpty(migrateVolumeAnswer.getDetails())) {
+                    throw new CloudRuntimeException(migrateVolumeAnswer.getDetails());
+                }
+                else {
+                    throw new CloudRuntimeException(errMsg);
+                }
+            }
+
+            if (srcVolumeDetached) {
+                _volumeService.revokeAccess(destVolumeInfo, hostVO, destVolumeInfo.getDataStore());
+            }
+
+            try {
+                _volumeService.revokeAccess(srcVolumeInfo, hostVO, srcVolumeInfo.getDataStore());
+            }
+            catch (Exception e) {
+                // This volume should be deleted soon, so just log a warning here.
+                LOGGER.warn(e.getMessage(), e);
+            }
+
+            return migrateVolumeAnswer.getVolumePath();
         }
-        catch (CloudRuntimeException | AgentUnavailableException | OperationTimedoutException ex) {
+        catch (Exception ex) {
+            try {
+                _volumeService.revokeAccess(destVolumeInfo, hostVO, destVolumeInfo.getDataStore());
+            }
+            catch (Exception e) {
+                // This volume should be deleted soon, so just log a warning here.
+                LOGGER.warn(e.getMessage(), e);
+            }
+
+            if (srcVolumeDetached) {
+                _volumeService.revokeAccess(srcVolumeInfo, hostVO, srcVolumeInfo.getDataStore());
+            }
+
             String msg = "Failed to perform volume migration : ";
 
             LOGGER.warn(msg, ex);
 
             throw new CloudRuntimeException(msg + ex.getMessage());
         }
-        finally {
-            // If the source volume is attached to the volume, then keep the destination volume in the access control list.
+    }
 
-            VirtualMachine virtualMachine = srcVolumeInfo.getAttachedVM();
+    private void setCertainVolumeValuesNull(long volumeId) {
+        VolumeVO volumeVO = _volumeDao.findById(volumeId);
 
-            if (virtualMachine == null) {
-                _volumeService.revokeAccess(destVolumeInfo, hostVO, destVolumeInfo.getDataStore());
-            }
-        }
+        volumeVO.set_iScsiName(null);
+        volumeVO.setMinIops(null);
+        volumeVO.setMaxIops(null);
+        volumeVO.setHypervisorSnapshotReserve(null);
 
-        return migrateVolumeAnswer;
+        _volumeDao.update(volumeId, volumeVO);
+    }
+
+    private void updateVolumePath(long volumeId, String path) {
+        VolumeVO volumeVO = _volumeDao.findById(volumeId);
+
+        volumeVO.setPath(path);
+
+        _volumeDao.update(volumeId, volumeVO);
     }
 
     private boolean usingBackendSnapshotFor(SnapshotInfo snapshotInfo) {

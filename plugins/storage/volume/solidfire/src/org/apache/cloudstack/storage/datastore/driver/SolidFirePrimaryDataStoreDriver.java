@@ -968,8 +968,15 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
         _volumeDetailsDao.persist(volumeDetailVo);
     }
 
-    private void updateSnapshotDetails(long csSnapshotId, long sfVolumeId, long sfNewSnapshotId, long storagePoolId, long sfNewVolumeSize) {
+    private void updateSnapshotDetails(long csSnapshotId, long csVolumeId, long sfVolumeId, long sfNewSnapshotId, long storagePoolId, long sfNewVolumeSize) {
         SnapshotDetailsVO snapshotDetail = new SnapshotDetailsVO(csSnapshotId,
+                SolidFireUtil.ORIG_CS_VOLUME_ID,
+                String.valueOf(csVolumeId),
+                false);
+
+        _snapshotDetailsDao.persist(snapshotDetail);
+
+        snapshotDetail = new SnapshotDetailsVO(csSnapshotId,
                 SolidFireUtil.VOLUME_ID,
                 String.valueOf(sfVolumeId),
                 false);
@@ -1129,8 +1136,22 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     private void deleteSolidFireSnapshot(SolidFireUtil.SolidFireConnection sfConnection, long csSnapshotId, long sfSnapshotId) {
         SolidFireUtil.deleteSolidFireSnapshot(sfConnection, sfSnapshotId);
 
+        final VolumeVO volume;
+        final long volumeId;
+
         SnapshotVO snapshot = _snapshotDao.findById(csSnapshotId);
-        VolumeVO volume = _volumeDao.findById(snapshot.getVolumeId());
+        SnapshotDetailsVO snapshotDetails = _snapshotDetailsDao.findDetail(csSnapshotId, SolidFireUtil.ORIG_CS_VOLUME_ID);
+
+        if (snapshotDetails != null && snapshotDetails.getValue() != null) {
+            volumeId = Long.valueOf(snapshotDetails.getValue());
+
+            volume = _volumeDao.findById(volumeId);
+        }
+        else {
+            volumeId = snapshot.getVolumeId();
+
+            volume = _volumeDao.findById(volumeId);
+        }
 
         if (volume == null) { // if the CloudStack volume has been deleted
             List<SnapshotVO> lstSnapshots = getNonDestroyedSnapshots(snapshot.getVolumeId());
@@ -1141,7 +1162,7 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
                 // The CloudStack volume snapshot has not yet been set to the DESTROYED state, so check to make
                 // sure snapshotVo.getId() != csSnapshotId when determining if any volume snapshots remain for the given CloudStack volume.
                 if (snapshotVo.getId() != csSnapshotId) {
-                    SnapshotDetailsVO snapshotDetails = _snapshotDetailsDao.findDetail(snapshotVo.getId(), SolidFireUtil.SNAPSHOT_ID);
+                    snapshotDetails = _snapshotDetailsDao.findDetail(snapshotVo.getId(), SolidFireUtil.SNAPSHOT_ID);
 
                     // We are only interested here in volume snapshots that make use of SolidFire snapshots (as opposed to ones
                     // that make use of SolidFire volumes).
@@ -1152,9 +1173,9 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
             }
 
             if (lstSnapshots2.isEmpty()) {
-                volume = _volumeDao.findByIdIncludingRemoved(snapshot.getVolumeId());
+                VolumeVO volumeToDelete = _volumeDao.findByIdIncludingRemoved(volumeId);
 
-                SolidFireUtil.deleteSolidFireVolume(sfConnection, Long.parseLong(volume.getFolder()));
+                SolidFireUtil.deleteSolidFireVolume(sfConnection, Long.parseLong(volumeToDelete.getFolder()));
             }
         }
     }
@@ -1265,7 +1286,7 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
 
                 long sfNewSnapshotId = SolidFireUtil.createSolidFireSnapshot(sfConnection, sfVolumeId, sfNewSnapshotName, getSnapshotAttributes(snapshotInfo));
 
-                updateSnapshotDetails(snapshotInfo.getId(), sfVolumeId, sfNewSnapshotId, storagePoolId, sfVolumeSize);
+                updateSnapshotDetails(snapshotInfo.getId(), volumeInfo.getId(), sfVolumeId, sfNewSnapshotId, storagePoolId, sfVolumeSize);
 
                 snapshotObjectTo.setPath("SfSnapshotId=" + sfNewSnapshotId);
             }

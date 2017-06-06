@@ -19,67 +19,76 @@
 
 package com.cloud.hypervisor.kvm.resource.wrapper;
 
+import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.storage.MigrateVolumeAnswer;
+import com.cloud.agent.api.storage.MigrateVolumeCommand;
 import com.cloud.agent.api.to.DiskTO;
+import com.cloud.hypervisor.kvm.resource.LibvirtComputingResource;
 import com.cloud.hypervisor.kvm.storage.KVMPhysicalDisk;
 import com.cloud.hypervisor.kvm.storage.KVMStoragePool;
-import org.apache.cloudstack.storage.to.PrimaryDataStoreTO;
-import org.apache.cloudstack.storage.to.VolumeObjectTO;
-import org.apache.cloudstack.utils.qemu.QemuImg;
-import org.apache.log4j.Logger;
-
-import com.cloud.agent.api.Answer;
-import com.cloud.agent.api.storage.MigrateVolumeCommand;
-import com.cloud.hypervisor.kvm.resource.LibvirtComputingResource;
 import com.cloud.hypervisor.kvm.storage.KVMStoragePoolManager;
 import com.cloud.resource.CommandWrapper;
 import com.cloud.resource.ResourceWrapper;
 
 import java.util.Map;
+import java.util.UUID;
+
+import org.apache.cloudstack.storage.to.PrimaryDataStoreTO;
+import org.apache.cloudstack.storage.to.VolumeObjectTO;
+import org.apache.log4j.Logger;
 
 @ResourceWrapper(handles =  MigrateVolumeCommand.class)
 public final class LibvirtMigrateVolumeCommandWrapper extends CommandWrapper<MigrateVolumeCommand, Answer, LibvirtComputingResource> {
-    private static final Logger s_logger = Logger.getLogger(LibvirtMigrateVolumeCommandWrapper.class);
+    private static final Logger LOGGER = Logger.getLogger(LibvirtMigrateVolumeCommandWrapper.class);
 
     @Override
     public Answer execute(final MigrateVolumeCommand command, final LibvirtComputingResource libvirtComputingResource) {
         KVMStoragePoolManager storagePoolManager = libvirtComputingResource.getStoragePoolMgr();
 
+        VolumeObjectTO srcVolumeObjectTO = (VolumeObjectTO)command.getSrcData();
+        PrimaryDataStoreTO srcPrimaryDataStore = (PrimaryDataStoreTO)srcVolumeObjectTO.getDataStore();
+
+        Map<String, String> srcDetails = command.getSrcDetails();
+
+        String srcPath = srcDetails != null ? srcDetails.get(DiskTO.IQN) : srcVolumeObjectTO.getPath();
+
         VolumeObjectTO destVolumeObjectTO = (VolumeObjectTO)command.getDestData();
         PrimaryDataStoreTO destPrimaryDataStore = (PrimaryDataStoreTO)destVolumeObjectTO.getDataStore();
 
-        Map<String, String> details = command.getDetails();
+        Map<String, String> destDetails = command.getDestDetails();
 
-        String path = details.get(DiskTO.IQN);
+        String destPath = destDetails != null ? destDetails.get(DiskTO.IQN) : (destVolumeObjectTO.getPath() != null ? destVolumeObjectTO.getPath() : UUID.randomUUID().toString());
 
         try {
-            VolumeObjectTO srcVolumeObjectTO = (VolumeObjectTO)command.getSrcData();
-            PrimaryDataStoreTO srcPrimaryDataStore = (PrimaryDataStoreTO)srcVolumeObjectTO.getDataStore();
+            storagePoolManager.connectPhysicalDisk(srcPrimaryDataStore.getPoolType(), srcPrimaryDataStore.getUuid(), srcPath, srcDetails);
 
-            final KVMPhysicalDisk sourceVolume = storagePoolManager.getPhysicalDisk(srcPrimaryDataStore.getPoolType(), srcPrimaryDataStore.getUuid(),
-                    srcVolumeObjectTO.getPath());
-
-            sourceVolume.setFormat(QemuImg.PhysicalDiskFormat.valueOf(srcVolumeObjectTO.getFormat().toString()));
+            KVMPhysicalDisk srcPhysicalDisk = storagePoolManager.getPhysicalDisk(srcPrimaryDataStore.getPoolType(), srcPrimaryDataStore.getUuid(), srcPath);
 
             KVMStoragePool destPrimaryStorage = storagePoolManager.getStoragePool(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid());
 
-            storagePoolManager.connectPhysicalDisk(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid(), path, details);
+            storagePoolManager.connectPhysicalDisk(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid(), destPath, destDetails);
 
-            storagePoolManager.copyPhysicalDisk(sourceVolume, path, destPrimaryStorage, command.getWaitInMillSeconds());
-
-            storagePoolManager.disconnectPhysicalDisk(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid(), path);
+            storagePoolManager.copyPhysicalDisk(srcPhysicalDisk, destPath, destPrimaryStorage, command.getWaitInMillSeconds());
         }
         catch (Exception ex) {
-            try {
-                storagePoolManager.disconnectPhysicalDisk(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid(), path);
-            }
-            finally {
-                s_logger.warn("Unable to disconnect from the device.");
-            }
-
             return new MigrateVolumeAnswer(command, false, ex.getMessage(), null);
         }
+        finally {
+            try {
+                storagePoolManager.disconnectPhysicalDisk(destPrimaryDataStore.getPoolType(), destPrimaryDataStore.getUuid(), destPath);
+            }
+            catch (Exception e) {
+                LOGGER.warn("Unable to disconnect from the destination device.", e);
+            }
 
-        return new MigrateVolumeAnswer(command, true, null, null);
+            try {
+                storagePoolManager.disconnectPhysicalDisk(srcPrimaryDataStore.getPoolType(), srcPrimaryDataStore.getUuid(), srcPath);
+            }
+            catch (Exception e) {
+                LOGGER.warn("Unable to disconnect from the source device.", e);
+            }
+        }
+
+        return new MigrateVolumeAnswer(command, true, null, destPath);
     }
 }

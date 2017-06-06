@@ -149,10 +149,39 @@ public class StorageSystemSnapshotStrategy extends SnapshotStrategyBase {
             throw new CloudRuntimeException("Only the " + ImageFormat.QCOW2.toString() + " image type is currently supported.");
         }
 
+        SnapshotDataStoreVO snapshotStore = snapshotStoreDao.findBySnapshot(snapshotInfo.getId(), DataStoreRole.Primary);
+
+        if (snapshotStore != null) {
+            long snapshotStoragePoolId = snapshotStore.getDataStoreId();
+
+            if (!volumeInfo.getPoolId().equals(snapshotStoragePoolId)) {
+                String errMsg = "Storage pool mismatch";
+
+                s_logger.error(errMsg);
+
+                throw new CloudRuntimeException(errMsg);
+            }
+        }
+
+        boolean storageSystemSupportsCapability = storageSystemSupportsCapability(volumeInfo.getPoolId(),
+                DataStoreCapabilities.CAN_REVERT_VOLUME_TO_SNAPSHOT.toString());
+
+        if (!storageSystemSupportsCapability) {
+            String errMsg = "Storage pool revert capability not supported";
+
+            s_logger.error(errMsg);
+
+            throw new CloudRuntimeException(errMsg);
+        }
+
         SnapshotVO snapshotVO = snapshotDao.acquireInLockTable(snapshotInfo.getId());
 
         if (snapshotVO == null) {
-            throw new CloudRuntimeException("Failed to acquire lock on the following snapshot: " + snapshotInfo.getId());
+            String errMsg = "Failed to acquire lock on the following snapshot: " + snapshotInfo.getId();
+
+            s_logger.error(errMsg);
+
+            throw new CloudRuntimeException(errMsg);
         }
 
         boolean success = false;
@@ -165,7 +194,7 @@ public class StorageSystemSnapshotStrategy extends SnapshotStrategyBase {
             if (!success) {
                 String errMsg = "Failed to revert a volume to a snapshot state";
 
-                s_logger.debug(errMsg);
+                s_logger.error(errMsg);
 
                 throw new CloudRuntimeException(errMsg);
             }
@@ -298,20 +327,32 @@ public class StorageSystemSnapshotStrategy extends SnapshotStrategyBase {
 
     @Override
     public StrategyPriority canHandle(Snapshot snapshot, SnapshotOperation op) {
-        // If the snapshot exists on Secondary Storage, we can't delete it.
         if (SnapshotOperation.DELETE.equals(op)) {
             SnapshotDataStoreVO snapshotStore = snapshotStoreDao.findBySnapshot(snapshot.getId(), DataStoreRole.Image);
 
+            // If the snapshot exists on Secondary Storage, we can't delete it.
             if (snapshotStore != null) {
                 return StrategyPriority.CANT_HANDLE;
             }
+
+            snapshotStore = snapshotStoreDao.findBySnapshot(snapshot.getId(), DataStoreRole.Primary);
+
+            if (snapshotStore == null) {
+                return StrategyPriority.CANT_HANDLE;
+            }
+
+            long snapshotStoragePoolId = snapshotStore.getDataStoreId();
+
+            boolean storageSystemSupportsCapability = storageSystemSupportsCapability(snapshotStoragePoolId, DataStoreCapabilities.STORAGE_SYSTEM_SNAPSHOT.toString());
+
+            return storageSystemSupportsCapability ? StrategyPriority.HIGHEST : StrategyPriority.CANT_HANDLE;
         }
 
         long volumeId = snapshot.getVolumeId();
 
         VolumeVO volumeVO = volumeDao.findByIdIncludingRemoved(volumeId);
 
-        long storagePoolId = volumeVO.getPoolId();
+        long volumeStoragePoolId = volumeVO.getPoolId();
 
         if (SnapshotOperation.REVERT.equals(op)) {
             boolean baseVolumeExists = volumeVO.getRemoved() == null;
@@ -320,17 +361,41 @@ public class StorageSystemSnapshotStrategy extends SnapshotStrategyBase {
                 boolean acceptableFormat = ImageFormat.QCOW2.equals(volumeVO.getFormat());
 
                 if (acceptableFormat) {
+                    SnapshotDataStoreVO snapshotStore = snapshotStoreDao.findBySnapshot(snapshot.getId(), DataStoreRole.Primary);
+
                     boolean usingBackendSnapshot = usingBackendSnapshotFor(snapshot.getId());
 
                     if (usingBackendSnapshot) {
-                        boolean storageSystemSupportsCapability = storageSystemSupportsCapability(storagePoolId, DataStoreCapabilities.CAN_REVERT_VOLUME_TO_SNAPSHOT.toString());
+                        if (snapshotStore != null) {
+                            long snapshotStoragePoolId = snapshotStore.getDataStoreId();
 
-                        if (storageSystemSupportsCapability) {
-                            return StrategyPriority.HIGHEST;
+                            boolean storageSystemSupportsCapability = storageSystemSupportsCapability(snapshotStoragePoolId,
+                                    DataStoreCapabilities.CAN_REVERT_VOLUME_TO_SNAPSHOT.toString());
+
+                            if (storageSystemSupportsCapability) {
+                                return StrategyPriority.HIGHEST;
+                            }
+
+                            storageSystemSupportsCapability = storageSystemSupportsCapability(volumeStoragePoolId,
+                                    DataStoreCapabilities.CAN_REVERT_VOLUME_TO_SNAPSHOT.toString());
+
+                            if (storageSystemSupportsCapability) {
+                                return StrategyPriority.HIGHEST;
+                            }
                         }
                     }
                     else {
-                        StoragePoolVO storagePoolVO = storagePoolDao.findById(storagePoolId);
+                        if (snapshotStore != null) {
+                            long snapshotStoragePoolId = snapshotStore.getDataStoreId();
+
+                            StoragePoolVO storagePoolVO = storagePoolDao.findById(snapshotStoragePoolId);
+
+                            if (storagePoolVO.isManaged()) {
+                                return StrategyPriority.HIGHEST;
+                            }
+                        }
+
+                        StoragePoolVO storagePoolVO = storagePoolDao.findById(volumeStoragePoolId);
 
                         if (storagePoolVO.isManaged()) {
                             return StrategyPriority.HIGHEST;
@@ -342,7 +407,7 @@ public class StorageSystemSnapshotStrategy extends SnapshotStrategyBase {
             return StrategyPriority.CANT_HANDLE;
         }
 
-        boolean storageSystemSupportsCapability = storageSystemSupportsCapability(storagePoolId, DataStoreCapabilities.STORAGE_SYSTEM_SNAPSHOT.toString());
+        boolean storageSystemSupportsCapability = storageSystemSupportsCapability(volumeStoragePoolId, DataStoreCapabilities.STORAGE_SYSTEM_SNAPSHOT.toString());
 
         return storageSystemSupportsCapability ? StrategyPriority.HIGHEST : StrategyPriority.CANT_HANDLE;
     }

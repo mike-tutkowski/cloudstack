@@ -28,7 +28,6 @@ import com.cloud.storage.StoragePool;
 import com.cloud.storage.Volume;
 
 public class MigrateVolumeCommand extends Command {
-
     long volumeId;
     String volumePath;
     StorageFilerTO pool;
@@ -37,7 +36,8 @@ public class MigrateVolumeCommand extends Command {
 
     private DataTO srcData;
     private DataTO destData;
-    private Map<String, String> details;
+    private Map<String, String> srcDetails;
+    private Map<String, String> destDetails;
 
     public MigrateVolumeCommand(long volumeId, String volumePath, StoragePool pool, int timeout) {
         this.volumeId = volumeId;
@@ -55,10 +55,11 @@ public class MigrateVolumeCommand extends Command {
         this.setWait(timeout);
     }
 
-    public MigrateVolumeCommand(final DataTO srcData, final DataTO destData, final Map<String, String> details, final int timeout) {
+    public MigrateVolumeCommand(DataTO srcData, DataTO destData, Map<String, String> srcDetails, Map<String, String> destDetails, int timeout) {
         this.srcData = srcData;
         this.destData = destData;
-        this.details = details;
+        this.srcDetails = srcDetails;
+        this.destDetails = destDetails;
 
         setWait(timeout);
     }
@@ -96,8 +97,12 @@ public class MigrateVolumeCommand extends Command {
         return destData;
     }
 
-    public Map<String, String> getDetails() {
-        return details;
+    public Map<String, String> getSrcDetails() {
+        return srcDetails;
+    }
+
+    public Map<String, String> getDestDetails() {
+        return destDetails;
     }
 
     public int getWaitInMillSeconds() {

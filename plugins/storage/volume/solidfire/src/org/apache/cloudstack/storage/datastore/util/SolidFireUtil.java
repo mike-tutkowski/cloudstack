@@ -117,6 +117,8 @@ public class SolidFireUtil {
     public static final String CloudStackTemplateId = "CloudStackTemplateId";
     public static final String CloudStackTemplateSize = "CloudStackTemplateSize";
 
+    public static final String ORIG_CS_VOLUME_ID = "originalCloudStackVolumeId";
+
     public static final String VOLUME_SIZE = "sfVolumeSize";
 
     public static final String STORAGE_POOL_ID = "sfStoragePoolId";
