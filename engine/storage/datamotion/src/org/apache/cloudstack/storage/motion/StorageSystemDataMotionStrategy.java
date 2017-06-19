@@ -515,6 +515,12 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
             // migrate the volume via the hypervisor
             migrateVolume(srcVolumeInfo, destVolumeInfo, hostVO, "Unable to migrate the volume from non-managed storage to managed storage");
+
+            volumeVO = _volumeDao.findById(destVolumeInfo.getId());
+
+            volumeVO.setFormat(ImageFormat.QCOW2);
+
+            _volumeDao.update(volumeVO.getId(), volumeVO);
         }
         catch (Exception ex) {
             errMsg = "Migration operation failed in 'StorageSystemDataMotionStrategy.handleVolumeMigrationFromNonManagedStorageToManagedStorage': " +
@@ -1121,6 +1127,12 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
                 destVolumeInfo.processEvent(Event.OperationSuccessed);
 
                 _volumeDao.updateUuid(srcVolumeInfo.getId(), destVolumeInfo.getId());
+
+                VolumeVO volumeVO = _volumeDao.findById(destVolumeInfo.getId());
+
+                volumeVO.setFormat(ImageFormat.QCOW2);
+
+                _volumeDao.update(volumeVO.getId(), volumeVO);
 
                 try {
                     _volumeService.destroyVolume(srcVolumeInfo.getId());
