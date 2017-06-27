@@ -1059,6 +1059,11 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
             MigrateCommand migrateCommand = new MigrateCommand(vmTO.getName(), destHost.getPrivateIpAddress(), isWindows, vmTO, true);
 
+            String wait = _configDao.getValue(Config.KvmStorageLiveMigrationWait.toString());
+            int storageLiveMigrationWait = NumbersUtil.parseInt(wait, Integer.parseInt(Config.KvmStorageLiveMigrationWait.getDefaultValue()));
+
+            migrateCommand.setWait(storageLiveMigrationWait);
+
             migrateCommand.setMigrateStorage(migrateStorage);
 
             MigrateAnswer migrateAnswer = (MigrateAnswer)_agentMgr.send(srcHost.getId(), migrateCommand);

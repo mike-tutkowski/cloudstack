@@ -199,6 +199,14 @@ public enum Config {
             "10800",
             "In second, timeout for download template to primary storage",
             null),
+    KvmStorageLiveMigrationWait(
+            "Storage",
+            StorageManager.class,
+            Integer.class,
+            "kvm.storage.live.migration.wait",
+            "10800",
+            "Timeout in seconds for live (online) storage migration to complete on KVM (migrateVirtualMachineWithVolume)",
+            null),
     CreateVolumeFromSnapshotWait(
             "Storage",
             StorageManager.class,
