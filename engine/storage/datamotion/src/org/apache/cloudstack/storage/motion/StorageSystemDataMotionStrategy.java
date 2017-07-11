@@ -59,6 +59,8 @@ import org.springframework.stereotype.Component;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Answer;
+import com.cloud.agent.api.storage.CopyVolumeAnswer;
+import com.cloud.agent.api.storage.CopyVolumeCommand;
 import com.cloud.agent.api.MigrateAnswer;
 import com.cloud.agent.api.MigrateCommand;
 import com.cloud.agent.api.ModifyTargetsAnswer;
@@ -305,7 +307,12 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
             if (srcVolumeInfo.getState() == Volume.State.Migrating) {
                 if (isVolumeOnManagedStorage(srcVolumeInfo)) {
-                    if (!isVolumeOnManagedStorage(destVolumeInfo)) {
+                    if (destVolumeInfo.getDataStore().getRole() == DataStoreRole.Image || destVolumeInfo.getDataStore().getRole() == DataStoreRole.ImageCache) {
+                        handleVolumeCopyFromManagedStorageToSecondaryStorage(srcVolumeInfo, destVolumeInfo, callback);
+
+                        return null;
+                    }
+                    else if (!isVolumeOnManagedStorage(destVolumeInfo)) {
                         handleVolumeMigrationFromManagedStorageToNonManagedStorage(srcVolumeInfo, destVolumeInfo, callback);
 
                         return null;
@@ -400,6 +407,72 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
         }
     }
 
+    private void handleVolumeCopyFromManagedStorageToSecondaryStorage(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo,
+                                                                      AsyncCompletionCallback<CopyCommandResult> callback) {
+        String errMsg = null;
+        String volumePath = null;
+
+        try {
+            if (!ImageFormat.QCOW2.equals(srcVolumeInfo.getFormat())) {
+                throw new CloudRuntimeException("Currently, only the KVM hypervisor type is supported for the migration of a volume " +
+                        "from managed storage to non-managed storage.");
+            }
+
+            HypervisorType hypervisorType = HypervisorType.KVM;
+
+            VirtualMachine vm = srcVolumeInfo.getAttachedVM();
+
+            if (vm != null && vm.getState() != VirtualMachine.State.Stopped) {
+                throw new CloudRuntimeException("Currently, if a volume to copy from managed storage to secondary storage is attached to " +
+                        "a VM, the VM must be in the Stopped state.");
+            }
+
+            long srcStoragePoolId = srcVolumeInfo.getPoolId();
+            StoragePoolVO srcStoragePoolVO = _storagePoolDao.findById(srcStoragePoolId);
+
+            HostVO hostVO;
+
+            if (srcStoragePoolVO.getClusterId() != null) {
+                hostVO = getHostInCluster(srcStoragePoolVO.getClusterId());
+            }
+            else {
+                hostVO = getHost(srcVolumeInfo.getDataCenterId(), hypervisorType);
+            }
+
+            volumePath = copyVolumeToSecondaryStorage(srcVolumeInfo, destVolumeInfo, hostVO,
+                    "Unable to copy the volume from managed storage to secondary storage");
+        }
+        catch (Exception ex) {
+            errMsg = "Migration operation failed in 'StorageSystemDataMotionStrategy.handleVolumeCopyFromManagedStorageToSecondaryStorage': " +
+                    ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
+        }
+        finally {
+            CopyCmdAnswer copyCmdAnswer;
+
+            if (errMsg != null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
+            else if (volumePath == null) {
+                copyCmdAnswer = new CopyCmdAnswer("Unable to acquire a volume path");
+            }
+            else {
+                VolumeObjectTO volumeObjectTO = (VolumeObjectTO)destVolumeInfo.getTO();
+
+                volumeObjectTO.setPath(volumePath);
+
+                copyCmdAnswer = new CopyCmdAnswer(volumeObjectTO);
+            }
+
+            CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
+
+            result.setResult(errMsg);
+
+            callback.complete(result);
+        }
+    }
+
     private void handleVolumeMigrationFromManagedStorageToNonManagedStorage(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo,
                                                                             AsyncCompletionCallback<CopyCommandResult> callback) {
         String errMsg = null;
@@ -414,7 +487,7 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
             VirtualMachine vm = srcVolumeInfo.getAttachedVM();
 
-            if (vm != null && (vm.getState() != VirtualMachine.State.Stopped && vm.getState() != VirtualMachine.State.Migrating)) {
+            if (vm != null && vm.getState() != VirtualMachine.State.Stopped) {
                 throw new CloudRuntimeException("Currently, if a volume to migrate from managed storage to non-managed storage is attached to " +
                         "a VM, the VM must be in the Stopped state.");
             }
@@ -724,6 +797,53 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             LOGGER.warn(msg, ex);
 
             throw new CloudRuntimeException(msg + ex.getMessage());
+        }
+    }
+
+    private String copyVolumeToSecondaryStorage(VolumeInfo srcVolumeInfo, VolumeInfo destVolumeInfo, HostVO hostVO, String errMsg) {
+        boolean srcVolumeDetached = srcVolumeInfo.getAttachedVM() == null;
+
+        try {
+            String value = _configDao.getValue(Config.KvmStorageOfflineMigrationWait.toString());
+            int primaryStorageDownloadWait = NumbersUtil.parseInt(value, Integer.parseInt(Config.KvmStorageOfflineMigrationWait.getDefaultValue()));
+
+            StoragePoolVO storagePoolVO = _storagePoolDao.findById(srcVolumeInfo.getPoolId());
+            Map<String, String> srcDetails = getVolumeDetails(srcVolumeInfo);
+
+            CopyVolumeCommand copyVolumeCommand = new CopyVolumeCommand(srcVolumeInfo.getId(), null, storagePoolVO,
+                    destVolumeInfo.getDataStore().getUri(), true, primaryStorageDownloadWait, true);
+
+            copyVolumeCommand.setSrcData(srcVolumeInfo.getTO());
+            copyVolumeCommand.setSrcDetails(srcDetails);
+
+            if (srcVolumeDetached) {
+                _volumeService.grantAccess(srcVolumeInfo, hostVO, srcVolumeInfo.getDataStore());
+            }
+
+            CopyVolumeAnswer copyVolumeAnswer = (CopyVolumeAnswer)_agentMgr.send(hostVO.getId(), copyVolumeCommand);
+
+            if (copyVolumeAnswer == null || !copyVolumeAnswer.getResult()) {
+                if (copyVolumeAnswer != null && !StringUtils.isEmpty(copyVolumeAnswer.getDetails())) {
+                    throw new CloudRuntimeException(copyVolumeAnswer.getDetails());
+                }
+                else {
+                    throw new CloudRuntimeException(errMsg);
+                }
+            }
+
+            return copyVolumeAnswer.getVolumePath();
+        }
+        catch (Exception ex) {
+            String msg = "Failed to perform volume copy to secondary storage : ";
+
+            LOGGER.warn(msg, ex);
+
+            throw new CloudRuntimeException(msg + ex.getMessage());
+        }
+        finally {
+            if (srcVolumeDetached) {
+                _volumeService.revokeAccess(srcVolumeInfo, hostVO, srcVolumeInfo.getDataStore());
+            }
         }
     }
 

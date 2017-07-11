@@ -2362,9 +2362,15 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
 
         String extractUrl = secStore.createEntityExtractUrl(vol.getPath(), vol.getFormat(), vol);
         VolumeDataStoreVO volumeStoreRef = _volumeStoreDao.findByVolume(volumeId);
+
         volumeStoreRef.setExtractUrl(extractUrl);
         volumeStoreRef.setExtractUrlCreated(DateUtil.now());
+        volumeStoreRef.setDownloadState(VMTemplateStorageResourceAssoc.Status.DOWNLOADED);
+        volumeStoreRef.setDownloadPercent(100);
+        volumeStoreRef.setZoneId(zoneId);
+
         _volumeStoreDao.update(volumeStoreRef.getId(), volumeStoreRef);
+
         return extractUrl;
     }
 
