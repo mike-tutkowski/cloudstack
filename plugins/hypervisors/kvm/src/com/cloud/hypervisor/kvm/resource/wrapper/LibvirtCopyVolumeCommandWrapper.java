@@ -132,7 +132,7 @@ public final class LibvirtCopyVolumeCommandWrapper extends CommandWrapper<CopyVo
         try {
             LibvirtUtilitiesHelper libvirtUtilitiesHelper = libvirtComputingResource.getLibvirtUtilitiesHelper();
             String destVolumeName = libvirtUtilitiesHelper.generateUUIDName() + ".qcow2";
-            String destVolumePath = "volumes" + File.separator + command.getVolumeId() + File.separator;
+            String destVolumePath = command.getVolumePath() + File.separator;
 
             String secondaryStorageUrl = command.getSecondaryStorageURL();
 

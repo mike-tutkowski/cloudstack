@@ -810,7 +810,7 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             StoragePoolVO storagePoolVO = _storagePoolDao.findById(srcVolumeInfo.getPoolId());
             Map<String, String> srcDetails = getVolumeDetails(srcVolumeInfo);
 
-            CopyVolumeCommand copyVolumeCommand = new CopyVolumeCommand(srcVolumeInfo.getId(), null, storagePoolVO,
+            CopyVolumeCommand copyVolumeCommand = new CopyVolumeCommand(srcVolumeInfo.getId(), destVolumeInfo.getPath(), storagePoolVO,
                     destVolumeInfo.getDataStore().getUri(), true, primaryStorageDownloadWait, true);
 
             copyVolumeCommand.setSrcData(srcVolumeInfo.getTO());
