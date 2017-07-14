@@ -468,7 +468,17 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
                     }
                 } else {
                     volume.setDiskOfferingId(diskOfferingId);
+
+                    DiskOfferingVO diskOfferingVO = _diskOfferingDao.findById(diskOfferingId);
+
+                    Boolean isCustomizedIops = diskOfferingVO != null && diskOfferingVO.isCustomizedIops() != null ? diskOfferingVO.isCustomizedIops() : false;
+
+                    if (isCustomizedIops == null || !isCustomizedIops) {
+                        volume.setMinIops(diskOfferingVO.getMinIops());
+                        volume.setMaxIops(diskOfferingVO.getMaxIops());
+                    }
                 }
+
                 // volume.setSize(size);
                 volume.setInstanceId(null);
                 volume.setUpdated(new Date());
