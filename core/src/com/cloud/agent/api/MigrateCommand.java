@@ -28,6 +28,7 @@ public class MigrateCommand extends Command {
     private String vmName;
     private String destIp;
     private Map<String, MigrateDiskInfo> migrateStorage;
+    private boolean autoConvergence;
     private String hostGuid;
     private boolean isWindows;
     private VirtualMachineTO vmTO;
@@ -54,6 +55,14 @@ public class MigrateCommand extends Command {
 
     public boolean isMigrateStorage() {
         return migrateStorage != null && !migrateStorage.isEmpty();
+    }
+
+    public void setAutoConvergence(boolean autoConvergence) {
+        this.autoConvergence = autoConvergence;
+    }
+
+    public boolean isAutoConvergence() {
+        return autoConvergence;
     }
 
     public boolean isWindows() {

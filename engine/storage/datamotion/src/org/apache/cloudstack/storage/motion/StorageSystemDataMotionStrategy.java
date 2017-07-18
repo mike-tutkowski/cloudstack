@@ -1163,6 +1163,11 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
             migrateCommand.setMigrateStorage(migrateStorage);
 
+            String autoConvergence = _configDao.getValue(Config.KvmAutoConvergence.toString());
+            boolean kvmAutoConvergence = Boolean.parseBoolean(autoConvergence);
+
+            migrateCommand.setAutoConvergence(kvmAutoConvergence);
+
             MigrateAnswer migrateAnswer = (MigrateAnswer)_agentMgr.send(srcHost.getId(), migrateCommand);
 
             boolean success = migrateAnswer != null && migrateAnswer.getResult();
