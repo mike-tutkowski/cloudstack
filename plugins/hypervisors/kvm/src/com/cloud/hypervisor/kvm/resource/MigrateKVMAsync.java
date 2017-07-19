@@ -54,7 +54,7 @@ public class MigrateKVMAsync implements Callable<Domain> {
         long flags = 1 << 0;
 
         // set compression flag for migration, if libvirt version supports it
-        if (dconn.getLibVirVersion() >= 1003000) {
+        if (dconn.getLibVirVersion() >= 1000003) {
             flags |= 1 << 11;
         }
 
