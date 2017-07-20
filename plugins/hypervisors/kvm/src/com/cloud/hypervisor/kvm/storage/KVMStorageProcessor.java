@@ -496,6 +496,13 @@ public class KVMStorageProcessor implements StorageProcessor {
 
     @Override
     public Answer createTemplateFromVolume(final CopyCommand cmd) {
+        Map<String, String> details = cmd.getOptions();
+
+        if (details != null && details.get(DiskTO.IQN) != null) {
+            // use the managed-storage approach
+            return createTemplateFromVolumeOrSnapshot(cmd);
+        }
+
         final DataTO srcData = cmd.getSrcTO();
         final DataTO destData = cmd.getDestTO();
         final int wait = cmd.getWaitInMillSeconds();
@@ -510,7 +517,8 @@ public class KVMStorageProcessor implements StorageProcessor {
         final NfsTO nfsImageStore = (NfsTO)imageStore;
 
         KVMStoragePool secondaryStorage = null;
-        KVMStoragePool primary = null;
+        KVMStoragePool primary;
+
         try {
             final String templateFolder = template.getPath();
 
@@ -615,9 +623,32 @@ public class KVMStorageProcessor implements StorageProcessor {
 
     @Override
     public Answer createTemplateFromSnapshot(CopyCommand cmd) {
+        Map<String, String> details = cmd.getOptions();
+
+        if (details != null && details.get(DiskTO.IQN) != null) {
+            // use the managed-storage approach
+            return createTemplateFromVolumeOrSnapshot(cmd);
+        }
+
+        return new CopyCmdAnswer("operation not supported");
+    }
+
+    private Answer createTemplateFromVolumeOrSnapshot(CopyCommand cmd) {
         DataTO srcData = cmd.getSrcTO();
-        SnapshotObjectTO snapshot = (SnapshotObjectTO)srcData;
-        PrimaryDataStoreTO primaryStore = (PrimaryDataStoreTO)snapshot.getDataStore();
+
+        final boolean isVolume;
+
+        if (srcData instanceof VolumeObjectTO) {
+            isVolume = true;
+        }
+        else if (srcData instanceof SnapshotObjectTO) {
+            isVolume = false;
+        }
+        else {
+            return new CopyCmdAnswer("unsupported object type");
+        }
+
+        PrimaryDataStoreTO primaryStore = (PrimaryDataStoreTO)srcData.getDataStore();
 
         DataTO destData = cmd.getDestTO();
         TemplateObjectTO template = (TemplateObjectTO)destData;
@@ -634,7 +665,7 @@ public class KVMStorageProcessor implements StorageProcessor {
         try {
             Map<String, String> details = cmd.getOptions();
 
-            String path = details != null ? details.get("iqn") : null;
+            String path = details != null ? details.get(DiskTO.IQN) : null;
 
             if (path == null) {
                 new CloudRuntimeException("The 'path' field must be specified.");
@@ -670,7 +701,12 @@ public class KVMStorageProcessor implements StorageProcessor {
             DateFormat dateFormat = new SimpleDateFormat("MM_dd_yyyy");
             Date date = new Date();
 
-            templateContent += "snapshot.name=" + dateFormat.format(date) + System.getProperty("line.separator");
+            if (isVolume) {
+                templateContent += "volume.name=" + dateFormat.format(date) + System.getProperty("line.separator");
+            }
+            else {
+                templateContent += "snapshot.name=" + dateFormat.format(date) + System.getProperty("line.separator");
+            }
 
             FileOutputStream templFo = new FileOutputStream(templateProp);
 
@@ -706,7 +742,12 @@ public class KVMStorageProcessor implements StorageProcessor {
 
             return new CopyCmdAnswer(newTemplate);
         } catch (Exception ex) {
-            s_logger.debug("Failed to createTemplateFromSnapshot: ", ex);
+            if (isVolume) {
+                s_logger.debug("Failed to create template from volume: ", ex);
+            }
+            else {
+                s_logger.debug("Failed to create template from snapshot: ", ex);
+            }
 
             return new CopyCmdAnswer(ex.toString());
         } finally {

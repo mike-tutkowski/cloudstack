@@ -577,16 +577,23 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
     @Override
     public boolean volumeInactive(Volume volume) {
         Long vmId = volume.getInstanceId();
-        if (vmId != null) {
-            UserVm vm = _entityMgr.findById(UserVm.class, vmId);
-            if (vm == null) {
-                return true;
-            }
-            State state = vm.getState();
-            if (state.equals(State.Stopped) || state.equals(State.Destroyed)) {
-                return true;
-            }
+
+        if (vmId == null) {
+            return true;
         }
+
+        UserVm vm = _entityMgr.findById(UserVm.class, vmId);
+
+        if (vm == null) {
+            return true;
+        }
+
+        State state = vm.getState();
+
+        if (state.equals(State.Stopped) || state.equals(State.Destroyed)) {
+            return true;
+        }
+
         return false;
     }
 

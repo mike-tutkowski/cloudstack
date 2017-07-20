@@ -80,6 +80,7 @@ import com.cloud.host.dao.HostDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.Storage.ImageFormat;
+import com.cloud.storage.VMTemplateVO;
 import com.cloud.storage.VolumeDetailVO;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
@@ -89,6 +90,7 @@ import com.cloud.storage.dao.GuestOSDao;
 import com.cloud.storage.dao.SnapshotDao;
 import com.cloud.storage.dao.SnapshotDetailsDao;
 import com.cloud.storage.dao.SnapshotDetailsVO;
+import com.cloud.storage.dao.VMTemplateDao;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.storage.dao.VolumeDetailsDao;
 import com.cloud.utils.NumbersUtil;
@@ -117,6 +119,7 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
     @Inject private SnapshotDataStoreDao _snapshotDataStoreDao;
     @Inject private SnapshotDetailsDao _snapshotDetailsDao;
     @Inject private VMInstanceDao _vmDao;
+    @Inject private VMTemplateDao _vmTmplDao;
     @Inject private VolumeDataFactory _volumeDataFactory;
     @Inject private VolumeDetailsDao _volumeDetailsDao;
     @Inject private VolumeDao _volumeDao;
@@ -147,6 +150,14 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             VolumeInfo destVolumeInfo = (VolumeInfo)destData;
 
             if (isVolumeOnManagedStorage(destVolumeInfo)) {
+                return StrategyPriority.HIGHEST;
+            }
+        }
+
+        if (srcData instanceof VolumeInfo && destData instanceof TemplateInfo) {
+            VolumeInfo srcVolumeInfo = (VolumeInfo)srcData;
+
+            if (isVolumeOnManagedStorage(srcVolumeInfo)) {
                 return StrategyPriority.HIGHEST;
             }
         }
@@ -363,6 +374,11 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
                 return null;
             }
+        } else if (srcData instanceof VolumeInfo && destData instanceof TemplateInfo &&
+                (destData.getDataStore().getRole() == DataStoreRole.Image || destData.getDataStore().getRole() == DataStoreRole.ImageCache)) {
+            handleCreateTemplateFromVolume((VolumeInfo)srcData, (TemplateInfo)destData, callback);
+
+            return null;
         }
 
         String errMsg = "This operation is not supported.";
@@ -702,6 +718,107 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
                 deleteVolumeFromSnapshot(snapshotInfo);
             }
 
+            if (copyCmdAnswer == null) {
+                copyCmdAnswer = new CopyCmdAnswer(errMsg);
+            }
+
+            CopyCommandResult result = new CopyCommandResult(null, copyCmdAnswer);
+
+            result.setResult(errMsg);
+
+            callback.complete(result);
+        }
+    }
+
+    private void handleCreateTemplateFromVolume(VolumeInfo volumeInfo, TemplateInfo templateInfo, AsyncCompletionCallback<CopyCommandResult> callback) {
+        boolean srcVolumeDetached = volumeInfo.getAttachedVM() == null;
+
+        String errMsg = null;
+        CopyCmdAnswer copyCmdAnswer = null;
+
+        try {
+            if (!ImageFormat.QCOW2.equals(volumeInfo.getFormat())) {
+                throw new CloudRuntimeException("When using managed storage, you can only create a template from a volume on KVM currently.");
+            }
+
+            volumeInfo.processEvent(Event.MigrationRequested);
+
+            HostVO hostVO = getHost(volumeInfo.getDataCenterId());
+            DataStore srcDataStore = volumeInfo.getDataStore();
+
+            String value = _configDao.getValue(Config.PrimaryStorageDownloadWait.toString());
+            int primaryStorageDownloadWait = NumberUtils.toInt(value, Integer.parseInt(Config.PrimaryStorageDownloadWait.getDefaultValue()));
+            CopyCommand copyCommand = new CopyCommand(volumeInfo.getTO(), templateInfo.getTO(), primaryStorageDownloadWait, VirtualMachineManager.ExecuteInSequence.value());
+
+            try {
+                if (srcVolumeDetached) {
+                    _volumeService.grantAccess(volumeInfo, hostVO, srcDataStore);
+                }
+
+                Map<String, String> srcDetails = getVolumeDetails(volumeInfo);
+
+                copyCommand.setOptions(srcDetails);
+
+                copyCmdAnswer = (CopyCmdAnswer)_agentMgr.send(hostVO.getId(), copyCommand);
+
+                if (!copyCmdAnswer.getResult()) {
+                    // We were not able to copy. Handle it.
+                    errMsg = copyCmdAnswer.getDetails();
+
+                    throw new CloudRuntimeException(errMsg);
+                }
+
+                VMTemplateVO vmTemplateVO = _vmTmplDao.findById(templateInfo.getId());
+
+                vmTemplateVO.setHypervisorType(HypervisorType.KVM);
+
+                _vmTmplDao.update(vmTemplateVO.getId(), vmTemplateVO);
+            }
+            catch (CloudRuntimeException | AgentUnavailableException | OperationTimedoutException ex) {
+                String msg = "Failed to create template from volume (Volume ID = " + volumeInfo.getId() + ") : ";
+
+                LOGGER.warn(msg, ex);
+
+                throw new CloudRuntimeException(msg + ex.getMessage());
+            }
+            finally {
+                try {
+                    if (srcVolumeDetached) {
+                        _volumeService.revokeAccess(volumeInfo, hostVO, srcDataStore);
+                    }
+                }
+                catch (Exception ex) {
+                    LOGGER.warn("Error revoking access to volume (Volume ID = " + volumeInfo.getId() + "): " + ex.getMessage(), ex);
+                }
+
+                if (copyCmdAnswer == null || !copyCmdAnswer.getResult()) {
+                    if (copyCmdAnswer != null && !StringUtils.isEmpty(copyCmdAnswer.getDetails())) {
+                        errMsg = copyCmdAnswer.getDetails();
+                    }
+                    else {
+                        errMsg = "Unable to create template from volume";
+                    }
+                }
+
+                try {
+                    if (StringUtils.isEmpty(errMsg)) {
+                        volumeInfo.processEvent(Event.OperationSuccessed);
+                    }
+                    else {
+                        volumeInfo.processEvent(Event.OperationFailed);
+                    }
+                }
+                catch (Exception ex) {
+                    LOGGER.warn("Error processing snapshot event: " + ex.getMessage(), ex);
+                }
+            }
+        }
+        catch (Exception ex) {
+            errMsg = ex.getMessage();
+
+            throw new CloudRuntimeException(errMsg);
+        }
+        finally {
             if (copyCmdAnswer == null) {
                 copyCmdAnswer = new CopyCmdAnswer(errMsg);
             }
