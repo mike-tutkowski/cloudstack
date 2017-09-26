@@ -1238,16 +1238,13 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
                 String connectedPath = connectHostToVolume(destHost, destVolumeInfo);
 
-                // Use the srcVolumeInfo's UUID here because it has not yet been transferred to the destVolumeInfo.
-                String diskSerialNumber = getDiskSerialNumber(srcVolumeInfo.getUuid());
-
-                MigrateCommand.MigrateDiskInfo migrateDiskInfo = new MigrateCommand.MigrateDiskInfo(diskSerialNumber,
+                MigrateCommand.MigrateDiskInfo migrateDiskInfo = new MigrateCommand.MigrateDiskInfo(srcVolumeInfo.getPath(),
                         MigrateCommand.MigrateDiskInfo.DiskType.BLOCK,
                         MigrateCommand.MigrateDiskInfo.DriverType.RAW,
                         MigrateCommand.MigrateDiskInfo.Source.DEV,
                         connectedPath);
 
-                migrateStorage.put(diskSerialNumber, migrateDiskInfo);
+                migrateStorage.put(srcVolumeInfo.getPath(), migrateDiskInfo);
 
                 srcVolumeInfoToDestVolumeInfo.put(srcVolumeInfo, destVolumeInfo);
             }
@@ -1477,12 +1474,6 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
         }
 
         return modifyTargetsAnswer.getConnectedPaths();
-    }
-
-    private String getDiskSerialNumber(String uuid) {
-        String uuidWithoutHyphen = uuid.replace("-","");
-
-        return uuidWithoutHyphen.substring(0, Math.min(uuidWithoutHyphen.length(), 20));
     }
 
     /*

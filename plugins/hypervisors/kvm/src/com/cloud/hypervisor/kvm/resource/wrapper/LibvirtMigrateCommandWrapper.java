@@ -24,6 +24,7 @@ import java.io.InputStream;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -295,10 +296,12 @@ public final class LibvirtMigrateCommandWrapper extends CommandWrapper<MigrateCo
                     if ("disk".equals(deviceChildNode.getNodeName())) {
                         Node diskNode = deviceChildNode;
 
-                        String diskNodeSerialNumber = getDiskNodeSerialNumber(diskNode);
+                        String sourceFileDevText = getSourceFileDevText(diskNode);
 
-                        if (migrateStorage.containsKey(diskNodeSerialNumber)) {
-                            MigrateCommand.MigrateDiskInfo migrateDiskInfo = migrateStorage.remove(diskNodeSerialNumber);
+                        String path = getPathFromSourceFileDevText(migrateStorage.keySet(), sourceFileDevText);
+
+                        if (path != null) {
+                            MigrateCommand.MigrateDiskInfo migrateDiskInfo = migrateStorage.remove(path);
 
                             NamedNodeMap diskNodeAttributes = diskNode.getAttributes();
                             Node diskNodeAttribute = diskNodeAttributes.getNamedItem("type");
@@ -344,14 +347,38 @@ public final class LibvirtMigrateCommandWrapper extends CommandWrapper<MigrateCo
         return getXml(doc);
     }
 
-    private String getDiskNodeSerialNumber(Node diskNode) {
+    private String getPathFromSourceFileDevText(Set<String> paths, String sourceFileDevText) {
+        if (paths != null && sourceFileDevText != null) {
+            for (String path : paths) {
+                if (sourceFileDevText.contains(path)) {
+                    return path;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private String getSourceFileDevText(Node diskNode) {
         NodeList diskChildNodes = diskNode.getChildNodes();
 
         for (int i = 0; i < diskChildNodes.getLength(); i++) {
-            Node domainChildNode = diskChildNodes.item(i);
+            Node diskChildNode = diskChildNodes.item(i);
 
-            if ("serial".equals(domainChildNode.getNodeName())) {
-                return domainChildNode.getTextContent();
+            if ("source".equals(diskChildNode.getNodeName())) {
+                NamedNodeMap diskNodeAttributes = diskChildNode.getAttributes();
+
+                Node diskNodeAttribute = diskNodeAttributes.getNamedItem("file");
+
+                if (diskNodeAttribute != null) {
+                    return diskNodeAttribute.getTextContent();
+                }
+
+                diskNodeAttribute = diskNodeAttributes.getNamedItem("dev");
+
+                if (diskNodeAttribute != null) {
+                    return diskNodeAttribute.getTextContent();
+                }
             }
         }
 
