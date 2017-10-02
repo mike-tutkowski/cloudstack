@@ -22,6 +22,10 @@ package com.cloud.agent.api;
 import com.cloud.agent.api.to.GPUDeviceTO;
 import com.cloud.vm.VirtualMachine;
 
+import java.util.ArrayList;
+import java.util.Map;
+import java.util.List;
+
 public class StopCommand extends RebootCommand {
     private boolean isProxy = false;
     private String urlPort = null;
@@ -29,6 +33,11 @@ public class StopCommand extends RebootCommand {
     boolean executeInSequence = false;
     private GPUDeviceTO gpuDevice;
     boolean checkBeforeCleanup = false;
+    /**
+     * On KVM when using iSCSI-based managed storage, if the user shuts a VM down from the guest OS (as opposed to doing so from CloudStack),
+     * we need to pass to the KVM agent a list of applicable iSCSI volumes that need to be disconnected.
+     */
+    private List<Map<String, String>> volumesToDisconnect = new ArrayList<>();
 
     protected StopCommand() {
     }
@@ -85,5 +94,13 @@ public class StopCommand extends RebootCommand {
 
     public boolean checkBeforeCleanup() {
         return this.checkBeforeCleanup;
+    }
+
+    public void setVolumesToDisconnect(List<Map<String, String>> volumesToDisconnect) {
+        this.volumesToDisconnect = volumesToDisconnect;
+    }
+
+    public List<Map<String, String>> getVolumesToDisconnect() {
+        return volumesToDisconnect;
     }
 }

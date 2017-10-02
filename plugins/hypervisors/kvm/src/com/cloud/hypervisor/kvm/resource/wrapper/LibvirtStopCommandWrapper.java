@@ -20,6 +20,7 @@
 package com.cloud.hypervisor.kvm.resource.wrapper;
 
 import java.util.List;
+import java.util.Map;
 
 import org.apache.log4j.Logger;
 import org.libvirt.Connect;
@@ -69,9 +70,23 @@ public final class LibvirtStopCommandWrapper extends CommandWrapper<StopCommand,
             libvirtComputingResource.destroyNetworkRulesForVM(conn, vmName);
             final String result = libvirtComputingResource.stopVM(conn, vmName);
             if (result == null) {
-                for (final DiskDef disk : disks) {
-                    libvirtComputingResource.cleanupDisk(disk);
+                if (disks != null && disks.size() > 0) {
+                    for (final DiskDef disk : disks) {
+                        libvirtComputingResource.cleanupDisk(disk);
+                    }
                 }
+                else {
+                    // When using iSCSI-based managed storage, if the user shuts a VM down from the guest OS (as opposed to doing so from CloudStack),
+                    // info needs to be passed to the KVM agent to have it disconnect KVM from the applicable iSCSI volumes.
+                    List<Map<String, String>> volumesToDisconnect = command.getVolumesToDisconnect();
+
+                    if (volumesToDisconnect != null) {
+                        for (Map<String, String> volumeToDisconnect : volumesToDisconnect) {
+                            libvirtComputingResource.cleanupDisk(volumeToDisconnect);
+                        }
+                    }
+                }
+
                 for (final InterfaceDef iface : ifaces) {
                     // We don't know which "traffic type" is associated with
                     // each interface at this point, so inform all vif drivers

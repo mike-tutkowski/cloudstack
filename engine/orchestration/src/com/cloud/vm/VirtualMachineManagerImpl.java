@@ -1266,9 +1266,36 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
         }
     }
 
+    private List<Map<String, String>> getVolumesToDisconnect(VirtualMachine vm) {
+        List<Map<String, String>> volumesToDisconnect = new ArrayList<>();
+
+        List<VolumeVO> volumes = _volsDao.findByInstance(vm.getId());
+
+        if (volumes != null) {
+            for (VolumeVO volume : volumes) {
+                StoragePoolVO storagePool = _storagePoolDao.findById(volume.getPoolId());
+
+                if (storagePool != null && storagePool.isManaged()) {
+                    Map<String, String> info = new HashMap<>(3);
+
+                    info.put(DiskTO.STORAGE_HOST, storagePool.getHostAddress());
+                    info.put(DiskTO.STORAGE_PORT, String.valueOf(storagePool.getPort()));
+                    info.put(DiskTO.IQN, volume.get_iScsiName());
+
+                    volumesToDisconnect.add(info);
+                }
+            }
+        }
+
+        return volumesToDisconnect;
+    }
+
     protected boolean sendStop(final VirtualMachineGuru guru, final VirtualMachineProfile profile, final boolean force, final boolean checkBeforeCleanup) {
         final VirtualMachine vm = profile.getVirtualMachine();
         final StopCommand stop = new StopCommand(vm, getExecuteInSequence(vm.getHypervisorType()), checkBeforeCleanup);
+
+        stop.setVolumesToDisconnect(getVolumesToDisconnect(vm));
+
         try {
             final Answer answer = _agentMgr.send(vm.getHostId(), stop);
             if (answer != null && answer instanceof StopAnswer) {

@@ -310,6 +310,19 @@ public class IscsiAdmStorageAdaptor implements StorageAdaptor {
     }
 
     @Override
+    public boolean disconnectPhysicalDisk(Map<String, String> volumeToDisconnect) {
+        String host = volumeToDisconnect.get(DiskTO.STORAGE_HOST);
+        String port = volumeToDisconnect.get(DiskTO.STORAGE_PORT);
+        String path = volumeToDisconnect.get(DiskTO.IQN);
+
+        if (host != null && port != null && path != null) {
+            return disconnectPhysicalDisk(host, Integer.parseInt(port), getIqn(path), getLun(path));
+        }
+
+        return false;
+    }
+
+    @Override
     public boolean disconnectPhysicalDiskByPath(String localPath) {
         String search1 = "/dev/disk/by-path/ip-";
         String search2 = ":";
