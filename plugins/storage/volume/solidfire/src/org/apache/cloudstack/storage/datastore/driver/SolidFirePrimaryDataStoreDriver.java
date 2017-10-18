@@ -394,8 +394,8 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
 
                         usedSpace += volumeSize;
                     }
-                    catch (NumberFormatException ex) {
-                        // can be ignored (the "folder" column didn't have a valid "long" in it (hasn't been placed there yet))
+                    catch (Exception ex) {
+                        // can be ignored
                     }
                 }
             }
