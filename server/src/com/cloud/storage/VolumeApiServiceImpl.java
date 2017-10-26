@@ -85,6 +85,7 @@ import org.apache.cloudstack.utils.identity.ManagementServerNode;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Answer;
+import com.cloud.agent.api.ModifyTargetsCommand;
 import com.cloud.agent.api.to.DataTO;
 import com.cloud.agent.api.to.DiskTO;
 import com.cloud.api.ApiDBUtils;
@@ -1796,6 +1797,8 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
 
             volService.revokeAccess(volFactory.getVolume(volume.getId()), host, dataStore);
 
+            handleTargetsForVMware(hostId, volumePool.getHostAddress(), volumePool.getPort(), volume.get_iScsiName());
+
             return _volsDao.findById(volumeId);
         } else {
 
@@ -1807,6 +1810,43 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             }
 
             throw new CloudRuntimeException(errorMsg);
+        }
+    }
+
+    private void handleTargetsForVMware(long hostId, String storageAddress, int storagePort, String iScsiName) {
+        HostVO host = _hostDao.findById(hostId);
+
+        if (host.getHypervisorType() == HypervisorType.VMware) {
+            ModifyTargetsCommand cmd = new ModifyTargetsCommand();
+
+            List<Map<String, String>> targets = new ArrayList<Map<String, String>>();
+
+            Map<String, String> target = new HashMap<String, String>();
+
+            target.put(ModifyTargetsCommand.STORAGE_HOST, storageAddress);
+            target.put(ModifyTargetsCommand.STORAGE_PORT, String.valueOf(storagePort));
+            target.put(ModifyTargetsCommand.IQN, iScsiName);
+
+            targets.add(target);
+
+            cmd.setTargets(targets);
+
+            sendModifyTargetsCommand(cmd, hostId);
+        }
+    }
+
+    private void sendModifyTargetsCommand(ModifyTargetsCommand cmd, long hostId) {
+        Answer answer = _agentMgr.easySend(hostId, cmd);
+
+        if (answer == null) {
+            String msg = "Unable to get an answer to the modify targets command";
+
+            s_logger.warn(msg);
+        }
+        else if (!answer.getResult()) {
+            String msg = "Unable to modify target on the following host: " + hostId;
+
+            s_logger.warn(msg);
         }
     }
 

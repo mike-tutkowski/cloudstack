@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.StringTokenizer;
+import java.util.UUID;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
@@ -60,9 +61,8 @@ import org.apache.cloudstack.storage.datastore.db.StoragePoolDetailVO;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolDetailsDao;
 import org.apache.cloudstack.utils.security.SSLUtils;
 
-import com.cloud.dc.ClusterDetailsDao;
-import com.cloud.dc.ClusterDetailsVO;
 import com.cloud.host.Host;
+import com.cloud.host.dao.HostDao;
 import com.cloud.host.HostVO;
 import com.cloud.user.AccountDetailVO;
 import com.cloud.user.AccountDetailsDao;
@@ -116,6 +116,8 @@ public class SolidFireUtil {
 
     private static final int DEFAULT_MANAGEMENT_PORT = 443;
     private static final int DEFAULT_STORAGE_PORT = 3260;
+
+    private static final int MAX_NUM_VAGS_PER_VOLUME = 4;
 
     public static class SolidFireConnection {
         private final String _managementVip;
@@ -238,44 +240,7 @@ public class SolidFireUtil {
         }
     }
 
-    public static long placeVolumeInVolumeAccessGroup(SolidFireConnection sfConnection, long sfVolumeId, long storagePoolId,
-            String vagUuid, List<HostVO> hosts, ClusterDetailsDao clusterDetailsDao) {
-        if (hosts == null || hosts.isEmpty()) {
-            throw new CloudRuntimeException("There must be at least one host in the cluster.");
-        }
-
-        long lVagId;
-
-        try {
-            lVagId = SolidFireUtil.createSolidFireVag(sfConnection, "CloudStack-" + vagUuid,
-                SolidFireUtil.getIqnsFromHosts(hosts), new long[] { sfVolumeId });
-        }
-        catch (Exception ex) {
-            String iqnInVagAlready = "Exceeded maximum number of Volume Access Groups per initiator";
-
-            if (!ex.getMessage().contains(iqnInVagAlready)) {
-                throw new CloudRuntimeException(ex.getMessage());
-            }
-
-            // getCompatibleVag throws an exception if an existing VAG can't be located
-            SolidFireUtil.SolidFireVag sfVag = getCompatibleVag(sfConnection, hosts);
-
-            lVagId = sfVag.getId();
-
-            long[] volumeIds = getNewVolumeIds(sfVag.getVolumeIds(), sfVolumeId, true);
-
-            SolidFireUtil.modifySolidFireVag(sfConnection, lVagId,
-                sfVag.getInitiators(), volumeIds);
-        }
-
-        ClusterDetailsVO clusterDetail = new ClusterDetailsVO(hosts.get(0).getClusterId(), getVagKey(storagePoolId), String.valueOf(lVagId));
-
-        clusterDetailsDao.persist(clusterDetail);
-
-        return lVagId;
-    }
-
-    public static boolean hostsSupport_iScsi(List<HostVO> hosts) {
+    private static boolean hostsSupport_iScsi(List<HostVO> hosts) {
         if (hosts == null || hosts.size() == 0) {
             return false;
         }
@@ -289,80 +254,100 @@ public class SolidFireUtil {
         return true;
     }
 
-    public static String[] getNewHostIqns(String[] currentIqns, String[] newIqns) {
-        List<String> lstIqns = new ArrayList<String>();
+    public static void placeVolumeInVolumeAccessGroups(SolidFireConnection sfConnection, long sfVolumeId, List<HostVO> hosts) {
+        if (!SolidFireUtil.hostsSupport_iScsi(hosts)) {
+            String errMsg = "Not all hosts in the compute cluster support iSCSI.";
 
-        if (currentIqns != null) {
-            for (String currentIqn : currentIqns) {
-                lstIqns.add(currentIqn);
-            }
+            s_logger.warn(errMsg);
+
+            throw new CloudRuntimeException(errMsg);
         }
 
-        if (newIqns != null) {
-            for (String newIqn : newIqns) {
-                if (!lstIqns.contains(newIqn)) {
-                    lstIqns.add(newIqn);
+        List<SolidFireUtil.SolidFireVag> sfVags = SolidFireUtil.getAllSolidFireVags(sfConnection);
+
+        Map<SolidFireUtil.SolidFireVag, List<String>> sfVagToIqnsMap = new HashMap<SolidFireUtil.SolidFireVag, List<String>>();
+
+        for (HostVO hostVO : hosts) {
+            String iqn = hostVO.getStorageUrl();
+
+            SolidFireUtil.SolidFireVag sfVag = getVolumeAccessGroup(iqn, sfVags);
+
+            List<String> iqnsInVag = sfVagToIqnsMap.get(sfVag);
+
+            if (iqnsInVag == null) {
+                iqnsInVag = new ArrayList<String>();
+
+                sfVagToIqnsMap.put(sfVag, iqnsInVag);
+            }
+
+            iqnsInVag.add(iqn);
+        }
+
+        if (sfVagToIqnsMap.size() > MAX_NUM_VAGS_PER_VOLUME) {
+            throw new CloudRuntimeException("A SolidFire volume can be in at most four volume access groups simultaneously.");
+        }
+
+        for (SolidFireUtil.SolidFireVag sfVag : sfVagToIqnsMap.keySet()) {
+            if (sfVag != null) {
+                if (!SolidFireUtil.isVolumeIdInSfVag(sfVolumeId, sfVag)) {
+                    SolidFireUtil.addVolumeIdsToSolidFireVag(sfConnection, sfVag.getId(), new long[] { sfVolumeId });
+                }
+            }
+            else {
+                List<String> iqnsNotInVag = sfVagToIqnsMap.get(null);
+
+                SolidFireUtil.createSolidFireVag(sfConnection, "CloudStack-" + UUID.randomUUID().toString(),
+                        iqnsNotInVag.toArray(new String[0]), new long[] { sfVolumeId });
+            }
+        }
+    }
+
+    private static SolidFireUtil.SolidFireVag getVolumeAccessGroup(String hostIqn, List<SolidFireUtil.SolidFireVag> sfVags) {
+        hostIqn = hostIqn.toLowerCase();
+
+        if (sfVags != null) {
+            for (SolidFireUtil.SolidFireVag sfVag : sfVags) {
+                List<String> lstInitiators = getStringArrayAsLowerCaseStringList(sfVag.getInitiators());
+
+                // lstInitiators should not be returned from getStringArrayAsLowerCaseStringList as null
+                if (lstInitiators.contains(hostIqn)) {
+                    return sfVag;
                 }
             }
         }
 
-        return lstIqns.toArray(new String[0]);
+        return null;
     }
 
-    public static long[] getNewVolumeIds(long[] volumeIds, long volumeIdToAddOrRemove, boolean add) {
-        if (add) {
-            return getNewVolumeIdsAdd(volumeIds, volumeIdToAddOrRemove);
-        }
+    public static boolean sfVagContains(SolidFireUtil.SolidFireVag sfVag, long sfVolumeId, long clusterId, HostDao hostDao) {
+        if (isVolumeIdInSfVag(sfVolumeId, sfVag)) {
+            String[] iqns = sfVag.getInitiators();
+            List<HostVO> hosts = hostDao.findByClusterId(clusterId);
 
-        return getNewVolumeIdsRemove(volumeIds, volumeIdToAddOrRemove);
-    }
+            for (String iqn : iqns) {
+                for (HostVO host : hosts) {
+                    String hostIqn = host.getStorageUrl();
 
-    private static long[] getNewVolumeIdsAdd(long[] volumeIds, long volumeIdToAdd) {
-        List<Long> lstVolumeIds = new ArrayList<Long>();
-
-        if (volumeIds != null) {
-            for (long volumeId : volumeIds) {
-                lstVolumeIds.add(volumeId);
+                    if (iqn.equalsIgnoreCase(hostIqn)) {
+                        return true;
+                    }
+                }
             }
         }
 
-        if (lstVolumeIds.contains(volumeIdToAdd)) {
-            return volumeIds;
-        }
-
-        lstVolumeIds.add(volumeIdToAdd);
-
-        return convertArray(lstVolumeIds);
+        return false;
     }
 
-    private static long[] getNewVolumeIdsRemove(long[] volumeIds, long volumeIdToRemove) {
-        List<Long> lstVolumeIds = new ArrayList<Long>();
+    private static boolean isVolumeIdInSfVag(long sfVolumeIdToCheck, SolidFireUtil.SolidFireVag sfVag) {
+        long[] sfVolumeIds = sfVag.getVolumeIds();
 
-        if (volumeIds != null) {
-            for (long volumeId : volumeIds) {
-                lstVolumeIds.add(volumeId);
+        for (long sfVolumeId : sfVolumeIds) {
+            if (sfVolumeId == sfVolumeIdToCheck) {
+                return true;
             }
         }
 
-        lstVolumeIds.remove(volumeIdToRemove);
-
-        return convertArray(lstVolumeIds);
-    }
-
-    private static long[] convertArray(List<Long> items) {
-        if (items == null) {
-            return new long[0];
-        }
-
-        long[] outArray = new long[items.size()];
-
-        for (int i = 0; i < items.size(); i++) {
-            Long value = items.get(i);
-
-            outArray[i] = value;
-        }
-
-        return outArray;
+        return false;
     }
 
     public static String getVagKey(long storagePoolId) {
@@ -900,6 +885,26 @@ public class SolidFireUtil {
         verifyResult(vagCreateResult.result, strVagCreateResultJson, gson);
 
         return vagCreateResult.result.volumeAccessGroupID;
+    }
+
+    public static void addVolumeIdsToSolidFireVag(SolidFireConnection sfConnection, long vagId, long[] volumeIds) {
+        final Gson gson = new GsonBuilder().create();
+
+        VagToAddVolumeIdsTo vagToAddVolumeIdsTo = new VagToAddVolumeIdsTo(vagId, volumeIds);
+
+        String strVagAddVolumeIdsToJson = gson.toJson(vagToAddVolumeIdsTo);
+
+        executeJsonRpc(sfConnection, strVagAddVolumeIdsToJson);
+    }
+
+    public static void removeVolumeIdsFromSolidFireVag(SolidFireConnection sfConnection, long vagId, long[] volumeIds) {
+        final Gson gson = new GsonBuilder().create();
+
+        VagToRemoveVolumeIdsFrom vagToRemoveVolumeIdsFrom = new VagToRemoveVolumeIdsFrom(vagId, volumeIds);
+
+        String strVagRemoveVolumeIdsFromJson = gson.toJson(vagToRemoveVolumeIdsFrom);
+
+        executeJsonRpc(sfConnection, strVagRemoveVolumeIdsFromJson);
     }
 
     public static void modifySolidFireVag(SolidFireConnection sfConnection, long lVagId, String[] iqns, long[] volumeIds)
@@ -1493,14 +1498,54 @@ public class SolidFireUtil {
     }
 
     @SuppressWarnings("unused")
+    private static final class VagToAddVolumeIdsTo {
+        private final String method = "AddVolumesToVolumeAccessGroup";
+        private final VagToAddVolumeIdsToParams params;
+
+        private VagToAddVolumeIdsTo(final long vagId, final long[] volumeIds) {
+            params = new VagToAddVolumeIdsToParams(vagId, volumeIds);
+        }
+
+        private static final class VagToAddVolumeIdsToParams {
+            private final long volumeAccessGroupID;
+            private final long[] volumes;
+
+            private VagToAddVolumeIdsToParams(long vagId, long[] volumeIds) {
+                volumeAccessGroupID = vagId;
+                volumes = volumeIds;
+            }
+        }
+    }
+
+    @SuppressWarnings("unused")
+    private static final class VagToRemoveVolumeIdsFrom {
+        private final String method = "RemoveVolumesFromVolumeAccessGroup";
+        private final VagToRemoveVolumeIdsFromParams params;
+
+        private VagToRemoveVolumeIdsFrom(final long vagId, final long[] volumeIds) {
+            params = new VagToRemoveVolumeIdsFromParams(vagId, volumeIds);
+        }
+
+        private static final class VagToRemoveVolumeIdsFromParams {
+            private final long volumeAccessGroupID;
+            private final long[] volumes;
+
+            private VagToRemoveVolumeIdsFromParams(long vagId, long[] volumeIds) {
+                volumeAccessGroupID = vagId;
+                volumes = volumeIds;
+            }
+        }
+    }
+
+    @SuppressWarnings("unused")
     private static final class VagToModify
     {
         private final String method = "ModifyVolumeAccessGroup";
         private final VagToModifyParams params;
 
-        private VagToModify(final long lVagName, final String[] iqns, final long[] volumeIds)
+        private VagToModify(final long lVagId, final String[] iqns, final long[] volumeIds)
         {
-            params = new VagToModifyParams(lVagName, iqns, volumeIds);
+            params = new VagToModifyParams(lVagId, iqns, volumeIds);
         }
 
         private static final class VagToModifyParams
@@ -1509,9 +1554,9 @@ public class SolidFireUtil {
             private final String[] initiators;
             private final long[] volumes;
 
-            private VagToModifyParams(final long lVagName, final String[] iqns, final long[] volumeIds)
+            private VagToModifyParams(final long lVagId, final String[] iqns, final long[] volumeIds)
             {
-                volumeAccessGroupID = lVagName;
+                volumeAccessGroupID = lVagId;
                 initiators = iqns;
                 volumes = volumeIds;
             }

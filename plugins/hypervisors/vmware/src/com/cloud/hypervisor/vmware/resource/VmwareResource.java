@@ -146,6 +146,7 @@ import com.cloud.agent.api.MigrateWithStorageCommand;
 import com.cloud.agent.api.ModifySshKeysCommand;
 import com.cloud.agent.api.ModifyStoragePoolAnswer;
 import com.cloud.agent.api.ModifyStoragePoolCommand;
+import com.cloud.agent.api.ModifyTargetsCommand;
 import com.cloud.agent.api.NetworkUsageAnswer;
 import com.cloud.agent.api.NetworkUsageCommand;
 import com.cloud.agent.api.PingCommand;
@@ -408,6 +409,8 @@ public class VmwareResource implements StoragePoolResource, ServerResource, Vmwa
                 return execute((CreateStoragePoolCommand)cmd);
             } else if (clz == ModifyStoragePoolCommand.class) {
                 answer = execute((ModifyStoragePoolCommand)cmd);
+            } else if (clz == ModifyTargetsCommand.class) {
+                answer = execute((ModifyTargetsCommand)cmd);
             } else if (clz == DeleteStoragePoolCommand.class) {
                 answer = execute((DeleteStoragePoolCommand)cmd);
             } else if (clz == CopyVolumeCommand.class) {
@@ -3565,6 +3568,27 @@ public class VmwareResource implements StoragePoolResource, ServerResource, Vmwa
         return new Answer(cmd, true, "success");
     }
 
+    protected Answer execute(ModifyTargetsCommand cmd) {
+        VmwareHypervisorHost hyperHost = getHyperHost(getServiceContext());
+
+        handleTargets(cmd.getAdd(), cmd.getTargets(), hyperHost);
+
+        return new Answer(cmd, true, "");
+    }
+
+    private void handleTargets(boolean add, List<Map<String, String>> targets, VmwareHypervisorHost hyperHost) {
+        if (targets != null && targets.size() > 0) {
+            try {
+                if (!add) {
+                    _storageProcessor.handleRemoveTargets(targets, hyperHost);
+                }
+            }
+            catch (Exception ex) {
+                s_logger.warn(ex.getMessage());
+            }
+        }
+    }
+
     protected Answer execute(ModifyStoragePoolCommand cmd) {
         if (s_logger.isInfoEnabled()) {
             s_logger.info("Executing resource ModifyStoragePoolCommand: " + _gson.toJson(cmd));
@@ -3643,6 +3667,10 @@ public class VmwareResource implements StoragePoolResource, ServerResource, Vmwa
 
     public static String getDatastoreName(String str) {
         return str.replace('/', '-');
+    }
+
+    public static String createDatastoreNameFromIqn(String iqn) {
+        return "-" + iqn + "-0";
     }
 
     protected Answer execute(AttachIsoCommand cmd) {
@@ -4511,7 +4539,11 @@ public class VmwareResource implements StoragePoolResource, ServerResource, Vmwa
 
                 for (HostHostBusAdapter hba : hostStorageSystem.getStorageDeviceInfo().getHostBusAdapter()) {
                     if (hba instanceof HostInternetScsiHba) {
-                        return ((HostInternetScsiHba)hba).getIScsiName();
+                        HostInternetScsiHba hostInternetScsiHba = (HostInternetScsiHba)hba;
+
+                        if (hostInternetScsiHba.isIsSoftwareBased()) {
+                            return ((HostInternetScsiHba)hba).getIScsiName();
+                        }
                     }
                 }
             }

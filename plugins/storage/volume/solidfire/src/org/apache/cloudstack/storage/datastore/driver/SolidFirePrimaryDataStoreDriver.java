@@ -49,8 +49,6 @@ import com.cloud.agent.api.to.DataStoreTO;
 import com.cloud.agent.api.to.DataTO;
 import com.cloud.agent.api.to.DiskTO;
 import com.cloud.dc.ClusterVO;
-import com.cloud.dc.ClusterDetailsVO;
-import com.cloud.dc.ClusterDetailsDao;
 import com.cloud.dc.dao.ClusterDao;
 import com.cloud.host.Host;
 import com.cloud.host.HostVO;
@@ -82,7 +80,6 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     @Inject private AccountDao _accountDao;
     @Inject private AccountDetailsDao _accountDetailsDao;
     @Inject private ClusterDao _clusterDao;
-    @Inject private ClusterDetailsDao _clusterDetailsDao;
     @Inject private HostDao _hostDao;
     @Inject private SnapshotDao _snapshotDao;
     @Inject private SnapshotDetailsDao _snapshotDetailsDao;
@@ -121,14 +118,8 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
         return null;
     }
 
-    // get the VAG associated with volumeInfo's cluster, if any (ListVolumeAccessGroups)
-    // if the VAG exists
-    //     update the VAG to contain all IQNs of the hosts (ModifyVolumeAccessGroup)
-    //     if the ID of volumeInfo in not in the VAG, add it (ModifyVolumeAccessGroup)
-    // if the VAG doesn't exist, create it with the IQNs of the hosts and the ID of volumeInfo (CreateVolumeAccessGroup)
     @Override
-    public boolean grantAccess(DataObject dataObject, Host host, DataStore dataStore)
-    {
+    public boolean grantAccess(DataObject dataObject, Host host, DataStore dataStore) {
         if (dataObject == null || host == null || dataStore == null) {
             return false;
         }
@@ -146,29 +137,11 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
         }
 
         try {
-            ClusterDetailsVO clusterDetail = _clusterDetailsDao.findDetail(clusterId, SolidFireUtil.getVagKey(storagePoolId));
-
-            String vagId = clusterDetail != null ? clusterDetail.getValue() : null;
-
             List<HostVO> hosts = _hostDao.findByClusterId(clusterId);
-
-            if (!SolidFireUtil.hostsSupport_iScsi(hosts)) {
-                return false;
-            }
 
             SolidFireUtil.SolidFireConnection sfConnection = SolidFireUtil.getSolidFireConnection(storagePoolId, _storagePoolDetailsDao);
 
-            if (vagId != null) {
-                SolidFireUtil.SolidFireVag sfVag = SolidFireUtil.getSolidFireVag(sfConnection, Long.parseLong(vagId));
-
-                String[] hostIqns = SolidFireUtil.getNewHostIqns(sfVag.getInitiators(), SolidFireUtil.getIqnsFromHosts(hosts));
-                long[] volumeIds = SolidFireUtil.getNewVolumeIds(sfVag.getVolumeIds(), sfVolumeId, true);
-
-                SolidFireUtil.modifySolidFireVag(sfConnection, sfVag.getId(), hostIqns, volumeIds);
-            }
-            else {
-                SolidFireUtil.placeVolumeInVolumeAccessGroup(sfConnection, sfVolumeId, storagePoolId, cluster.getUuid(), hosts, _clusterDetailsDao);
-            }
+            SolidFireUtil.placeVolumeInVolumeAccessGroups(sfConnection, sfVolumeId, hosts);
 
             return true;
         }
@@ -178,9 +151,6 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
         }
     }
 
-    // get the VAG associated with volumeInfo's cluster, if any (ListVolumeAccessGroups) // might not exist if using CHAP
-    // if the VAG exists
-    //     remove the ID of volumeInfo from the VAG (ModifyVolumeAccessGroup)
     @Override
     public void revokeAccess(DataObject dataObject, Host host, DataStore dataStore)
     {
@@ -201,21 +171,14 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
         }
 
         try {
-            ClusterDetailsVO clusterDetail = _clusterDetailsDao.findDetail(clusterId, SolidFireUtil.getVagKey(storagePoolId));
+            SolidFireUtil.SolidFireConnection sfConnection = SolidFireUtil.getSolidFireConnection(storagePoolId, _storagePoolDetailsDao);
 
-            String vagId = clusterDetail != null ? clusterDetail.getValue() : null;
+            List<SolidFireUtil.SolidFireVag> sfVags = SolidFireUtil.getAllSolidFireVags(sfConnection);
 
-            if (vagId != null) {
-                List<HostVO> hosts = _hostDao.findByClusterId(clusterId);
-
-                SolidFireUtil.SolidFireConnection sfConnection = SolidFireUtil.getSolidFireConnection(storagePoolId, _storagePoolDetailsDao);
-
-                SolidFireUtil.SolidFireVag sfVag = SolidFireUtil.getSolidFireVag(sfConnection, Long.parseLong(vagId));
-
-                String[] hostIqns = SolidFireUtil.getNewHostIqns(sfVag.getInitiators(), SolidFireUtil.getIqnsFromHosts(hosts));
-                long[] volumeIds = SolidFireUtil.getNewVolumeIds(sfVag.getVolumeIds(), sfVolumeId, false);
-
-                SolidFireUtil.modifySolidFireVag(sfConnection, sfVag.getId(), hostIqns, volumeIds);
+            for (SolidFireUtil.SolidFireVag sfVag : sfVags) {
+                if (SolidFireUtil.sfVagContains(sfVag, sfVolumeId, clusterId, _hostDao)) {
+                    SolidFireUtil.removeVolumeIdsFromSolidFireVag(sfConnection, sfVag.getId(), new long[] { sfVolumeId });
+                }
             }
         }
         finally {
@@ -392,7 +355,7 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
         private final long _maxIops;
         private final long _burstIops;
 
-        public Iops(long minIops, long maxIops, long burstIops) throws IllegalArgumentException {
+        Iops(long minIops, long maxIops, long burstIops) throws IllegalArgumentException {
             if (minIops <= 0 || maxIops <= 0) {
                 throw new IllegalArgumentException("The 'Min IOPS' and 'Max IOPS' values must be greater than 0.");
             }
@@ -410,15 +373,15 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
             _burstIops = burstIops;
         }
 
-        public long getMinIops() {
+        long getMinIops() {
             return _minIops;
         }
 
-        public long getMaxIops() {
+        long getMaxIops() {
             return _maxIops;
         }
 
-        public long getBurstIops() {
+        long getBurstIops() {
             return _burstIops;
         }
     }
@@ -570,7 +533,7 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
 
     @Override
     public void takeSnapshot(SnapshotInfo snapshotInfo, AsyncCompletionCallback<CreateCmdResult> callback) {
-        CreateCmdResult result = null;
+        CreateCmdResult result;
 
         try {
             VolumeInfo volumeInfo = snapshotInfo.getBaseVolume();

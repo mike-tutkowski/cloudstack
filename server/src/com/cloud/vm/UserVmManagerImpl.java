@@ -99,6 +99,7 @@ import com.cloud.agent.api.GetVmDiskStatsCommand;
 import com.cloud.agent.api.GetVmIpAddressCommand;
 import com.cloud.agent.api.GetVmStatsAnswer;
 import com.cloud.agent.api.GetVmStatsCommand;
+import com.cloud.agent.api.ModifyTargetsCommand;
 import com.cloud.agent.api.PvlanSetupCommand;
 import com.cloud.agent.api.StartAnswer;
 import com.cloud.agent.api.VmDiskStatsEntry;
@@ -5216,9 +5217,10 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     }
 
     private void handleManagedStorage(UserVmVO vm, VolumeVO root) {
-        if ( Volume.State.Allocated.equals(root.getState()) ){
+        if (Volume.State.Allocated.equals(root.getState())) {
             return;
         }
+
         StoragePoolVO storagePool = _storagePoolDao.findById(root.getPoolId());
 
         if (storagePool != null && storagePool.isManaged()) {
@@ -5288,7 +5290,48 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 // root.getPoolId() should be null if the VM we are detaching the disk from has never been started before
                 DataStore dataStore = root.getPoolId() != null ? _dataStoreMgr.getDataStore(root.getPoolId(), DataStoreRole.Primary) : null;
                 volumeMgr.revokeAccess(volFactory.getVolume(root.getId()), host, dataStore);
+
+                if (dataStore != null) {
+                    handleTargetsForVMware(host.getId(), storagePool.getHostAddress(), storagePool.getPort(), root.get_iScsiName());
+                }
             }
+        }
+    }
+
+    private void handleTargetsForVMware(long hostId, String storageAddress, int storagePort, String iScsiName) {
+        HostVO host = _hostDao.findById(hostId);
+
+        if (host.getHypervisorType() == HypervisorType.VMware) {
+            ModifyTargetsCommand cmd = new ModifyTargetsCommand();
+
+            List<Map<String, String>> targets = new ArrayList<Map<String, String>>();
+
+            Map<String, String> target = new HashMap<String, String>();
+
+            target.put(ModifyTargetsCommand.STORAGE_HOST, storageAddress);
+            target.put(ModifyTargetsCommand.STORAGE_PORT, String.valueOf(storagePort));
+            target.put(ModifyTargetsCommand.IQN, iScsiName);
+
+            targets.add(target);
+
+            cmd.setTargets(targets);
+
+            sendModifyTargetsCommand(cmd, hostId);
+        }
+    }
+
+    private void sendModifyTargetsCommand(ModifyTargetsCommand cmd, long hostId) {
+        Answer answer = _agentMgr.easySend(hostId, cmd);
+
+        if (answer == null) {
+            String msg = "Unable to get an answer to the modify targets command";
+
+            s_logger.warn(msg);
+        }
+        else if (!answer.getResult()) {
+            String msg = "Unable to modify target on the following host: " + hostId;
+
+            s_logger.warn(msg);
         }
     }
 

@@ -80,6 +80,7 @@ import com.cloud.agent.api.ClusterVMMetaDataSyncAnswer;
 import com.cloud.agent.api.ClusterVMMetaDataSyncCommand;
 import com.cloud.agent.api.Command;
 import com.cloud.agent.api.MigrateCommand;
+import com.cloud.agent.api.ModifyTargetsCommand;
 import com.cloud.agent.api.PingRoutingCommand;
 import com.cloud.agent.api.PlugNicAnswer;
 import com.cloud.agent.api.PlugNicCommand;
@@ -506,6 +507,8 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
 
         final Long hostId = vm.getHostId() != null ? vm.getHostId() : vm.getLastHostId();
 
+        List<Map<String, String>> targets = getTargets(hostId, vm.getId());
+
         if (volumeExpungeCommands != null && volumeExpungeCommands.size() > 0 && hostId != null) {
             final Commands cmds = new Commands(Command.OnError.Stop);
 
@@ -532,6 +535,10 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
 
         // Clean up volumes based on the vm's instance id
         volumeMgr.cleanupVolumes(vm.getId());
+
+        if (hostId != null && targets != null && targets.size() > 0) {
+            removeDynamicTargets(hostId, targets);
+        }
 
         final VirtualMachineGuru guru = getVmGuru(vm);
         guru.finalizeExpunge(vm);
@@ -567,6 +574,57 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
             s_logger.debug("Expunged " + vm);
         }
 
+    }
+
+    private List<Map<String, String>> getTargets(long hostId, long vmId) {
+        List<Map<String, String>> targets = new ArrayList<Map<String, String>>();
+
+        HostVO hostVO = _hostDao.findById(hostId);
+
+        if (hostVO != null && hostVO.getHypervisorType() == HypervisorType.VMware) {
+            List<VolumeVO> volumes = _volsDao.findByInstance(vmId);
+
+            if (volumes != null) {
+                for (VolumeVO volume : volumes) {
+                    StoragePoolVO storagePoolVO = _storagePoolDao.findById(volume.getPoolId());
+
+                    if (storagePoolVO != null && storagePoolVO.isManaged()) {
+                        Map<String, String> target = new HashMap<String, String>();
+
+                        target.put(ModifyTargetsCommand.STORAGE_HOST, storagePoolVO.getHostAddress());
+                        target.put(ModifyTargetsCommand.STORAGE_PORT, String.valueOf(storagePoolVO.getPort()));
+                        target.put(ModifyTargetsCommand.IQN, volume.get_iScsiName());
+
+                        targets.add(target);
+                    }
+                }
+            }
+        }
+
+        return targets;
+    }
+
+    private void removeDynamicTargets(long hostId, List<Map<String, String>> targets) {
+        ModifyTargetsCommand cmd = new ModifyTargetsCommand();
+
+        cmd.setTargets(targets);
+
+        sendModifyTargetsCommand(cmd, hostId);
+    }
+
+    private void sendModifyTargetsCommand(ModifyTargetsCommand cmd, long hostId) {
+        Answer answer = _agentMgr.easySend(hostId, cmd);
+
+        if (answer == null) {
+            String msg = "Unable to get an answer to the modify targets command";
+
+            s_logger.warn(msg);
+        }
+        else if (!answer.getResult()) {
+            String msg = "Unable to modify target on the following host: " + hostId;
+
+            s_logger.warn(msg);
+        }
     }
 
     @Override

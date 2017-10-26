@@ -37,9 +37,11 @@ import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
 
 import com.google.gson.Gson;
+import com.vmware.vim25.DatastoreHostMount;
 import com.vmware.vim25.HostHostBusAdapter;
 import com.vmware.vim25.HostInternetScsiHba;
 import com.vmware.vim25.HostInternetScsiHbaAuthenticationProperties;
+import com.vmware.vim25.HostInternetScsiHbaSendTarget;
 import com.vmware.vim25.HostInternetScsiHbaStaticTarget;
 import com.vmware.vim25.HostInternetScsiTargetTransport;
 import com.vmware.vim25.HostScsiDisk;
@@ -70,6 +72,7 @@ import org.apache.cloudstack.storage.to.VolumeObjectTO;
 
 import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.Command;
+import com.cloud.agent.api.ModifyTargetsCommand;
 import com.cloud.agent.api.to.DataStoreTO;
 import com.cloud.agent.api.to.DataTO;
 import com.cloud.agent.api.to.DiskTO;
@@ -1655,6 +1658,9 @@ public class VmwareStorageProcessor implements StorageProcessor {
                         DatacenterMO dcMo = new DatacenterMO(context, morDc);
                         vmMo = dcMo.findVm(vmName);
                     }
+
+                    List<Map<String, String>> dynamicTargetsToRemove = null;
+
                     if (vmMo != null) {
                         if (s_logger.isInfoEnabled()) {
                             s_logger.info("Destroy root volume and VM itself. vmName " + vmName);
@@ -1681,7 +1687,7 @@ public class VmwareStorageProcessor implements StorageProcessor {
                         // don't remove the iSCSI connection(s) until the supported disk(s) is/are removed from the VM
                         // (removeManagedTargetsFromCluster should be called after detachAllDisksExcept and vm.destroy)
                         List<VirtualDisk> virtualDisks = vmMo.getVirtualDisks();
-                        List<String> managedIqns = getManagedIqnsFromVirtualDisks(virtualDisks);
+                        List<String> managedDatastoreNames = getManagedDatastoreNamesFromVirtualDisks(virtualDisks);
 
                         List<String> detachedDisks = vmMo.detachAllDisksExcept(vol.getPath(), diskInfo != null ? diskInfo.getDiskDeviceBusName() : null);
                         VmwareStorageLayoutHelper.moveVolumeToRootFolder(new DatacenterMO(context, morDc), detachedDisks);
@@ -1697,8 +1703,8 @@ public class VmwareStorageProcessor implements StorageProcessor {
                         }
 
                         // this.hostService.handleDatastoreAndVmdkDetach(iScsiName, storageHost, storagePort);
-                        if (managedIqns != null && !managedIqns.isEmpty()) {
-                            removeManagedTargetsFromCluster(managedIqns);
+                        if (managedDatastoreNames != null && !managedDatastoreNames.isEmpty()) {
+                            removeManagedTargetsFromCluster(managedDatastoreNames);
                         }
 
                         for (NetworkDetails netDetails : networks) {
@@ -1717,7 +1723,8 @@ public class VmwareStorageProcessor implements StorageProcessor {
 
                     VmwareStorageLayoutHelper.deleteVolumeVmdkFiles(dsMo, vol.getPath(), new DatacenterMO(context, morDc));
                      */
-                    return new Answer(cmd, true, "Success");
+
+                    return new Answer(cmd, true, "");
                 }
 
                 if (s_logger.isInfoEnabled()) {
@@ -1725,7 +1732,9 @@ public class VmwareStorageProcessor implements StorageProcessor {
                 }
             }
 
-            VmwareStorageLayoutHelper.deleteVolumeVmdkFiles(dsMo, vol.getPath(), new DatacenterMO(context, morDc));
+            if (!isManaged) {
+                VmwareStorageLayoutHelper.deleteVolumeVmdkFiles(dsMo, vol.getPath(), new DatacenterMO(context, morDc));
+            }
 
             return new Answer(cmd, true, "Success");
         } catch (Throwable e) {
@@ -1765,12 +1774,8 @@ public class VmwareStorageProcessor implements StorageProcessor {
          }
     }
 
-    private ManagedObjectReference getVmfsDatastore(VmwareContext context, VmwareHypervisorHost hyperHost, String datastoreName, String storageIpAddress, int storagePortNumber,
-            String iqn, String chapName, String chapSecret, String mutualChapName, String mutualChapSecret) throws Exception {
-        ManagedObjectReference morCluster = hyperHost.getHyperHostCluster();
-        ClusterMO cluster = new ClusterMO(context, morCluster);
-        List<Pair<ManagedObjectReference, String>> lstHosts = cluster.getClusterHosts();
-
+    private List<HostInternetScsiHbaStaticTarget> getTargets(String storageIpAddress, int storagePortNumber, String iqn,
+                                                             String chapName, String chapSecret, String mutualChapName, String mutualChapSecret) {
         HostInternetScsiHbaStaticTarget target = new HostInternetScsiHbaStaticTarget();
 
         target.setAddress(storageIpAddress);
@@ -1802,46 +1807,207 @@ public class VmwareStorageProcessor implements StorageProcessor {
 
         lstTargets.add(target);
 
-        addRemoveInternetScsiTargetsToAllHosts(context, true, lstTargets, lstHosts);
+        return lstTargets;
+    }
 
-        rescanAllHosts(context, lstHosts);
+    private class HostDiscoveryMethod {
+        private final List<Pair<ManagedObjectReference, String>> hostsUsingDynamicDiscovery;
+        private final List<Pair<ManagedObjectReference, String>> hostsUsingStaticDiscovery;
 
-        HostMO host = new HostMO(context, lstHosts.get(0).first());
-        HostDatastoreSystemMO hostDatastoreSystem = host.getHostDatastoreSystemMO();
-
-        ManagedObjectReference morDs = hostDatastoreSystem.findDatastoreByName(datastoreName);
-
-        if (morDs != null) {
-            return morDs;
+        public HostDiscoveryMethod(List<Pair<ManagedObjectReference, String>> hostsUsingDynamicDiscovery,
+                                    List<Pair<ManagedObjectReference, String>> hostsUsingStaticDiscovery) {
+            this.hostsUsingDynamicDiscovery = hostsUsingDynamicDiscovery;
+            this.hostsUsingStaticDiscovery = hostsUsingStaticDiscovery;
         }
 
-        rescanAllHosts(context, lstHosts);
+        public List<Pair<ManagedObjectReference, String>> getHostsUsingDynamicDiscovery() {
+            return hostsUsingDynamicDiscovery;
+        }
 
-        HostStorageSystemMO hostStorageSystem = host.getHostStorageSystemMO();
-        List<HostScsiDisk> lstHostScsiDisks = hostDatastoreSystem.queryAvailableDisksForVmfs();
+        public List<Pair<ManagedObjectReference, String>> getHostsUsingStaticDiscovery() {
+            return hostsUsingStaticDiscovery;
+        }
+    }
 
-        HostScsiDisk hostScsiDisk = getHostScsiDisk(hostStorageSystem.getStorageDeviceInfo().getScsiTopology(), lstHostScsiDisks, iqn);
+    private HostDiscoveryMethod getHostDiscoveryMethod(VmwareContext context, String address,
+                                                       List<Pair<ManagedObjectReference, String>> lstHosts) throws Exception {
+        List<Pair<ManagedObjectReference, String>> hostsUsingDynamicDiscovery = new ArrayList<Pair<ManagedObjectReference, String>>();
+        List<Pair<ManagedObjectReference, String>> hostsUsingStaticDiscovery = new ArrayList<Pair<ManagedObjectReference, String>>();
+
+        for (Pair<ManagedObjectReference, String> hostPair : lstHosts) {
+            boolean usingDynamicDiscovery = false;
+
+            HostMO host = new HostMO(context, hostPair.first());
+            HostStorageSystemMO hostStorageSystem = host.getHostStorageSystemMO();
+
+            for (HostHostBusAdapter hba : hostStorageSystem.getStorageDeviceInfo().getHostBusAdapter()) {
+                if (hba instanceof HostInternetScsiHba) {
+                    HostInternetScsiHba hostInternetScsiHba = (HostInternetScsiHba)hba;
+
+                    if (hostInternetScsiHba.isIsSoftwareBased()) {
+                        List<HostInternetScsiHbaSendTarget> sendTargets = hostInternetScsiHba.getConfiguredSendTarget();
+
+                        if (sendTargets != null) {
+                            for (HostInternetScsiHbaSendTarget sendTarget : sendTargets) {
+                                String sendTargetAddress = sendTarget.getAddress();
+
+                                if (sendTargetAddress.contains(address)) {
+                                    usingDynamicDiscovery = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (usingDynamicDiscovery) {
+                hostsUsingDynamicDiscovery.add(hostPair);
+            }
+            else {
+                hostsUsingStaticDiscovery.add(hostPair);
+            }
+        }
+
+        return new HostDiscoveryMethod(hostsUsingDynamicDiscovery, hostsUsingStaticDiscovery);
+    }
+
+    private ManagedObjectReference getVmfsDatastore(VmwareContext context, VmwareHypervisorHost hyperHost, String datastoreName, String storageIpAddress, int storagePortNumber,
+            String iqn, String chapName, String chapSecret, String mutualChapName, String mutualChapSecret) throws Exception {
+        ManagedObjectReference morDs = null;
+
+        ManagedObjectReference morCluster = hyperHost.getHyperHostCluster();
+        ClusterMO cluster = new ClusterMO(context, morCluster);
+        List<Pair<ManagedObjectReference, String>> lstHosts = cluster.getClusterHosts();
+
+        Pair<ManagedObjectReference, String> firstHost = lstHosts.get(0);
+        HostMO firstHostMO = new HostMO(context, firstHost.first());
+        HostDatastoreSystemMO firstHostDatastoreSystemMO = firstHostMO.getHostDatastoreSystemMO();
+
+        HostDiscoveryMethod hostDiscoveryMethod = getHostDiscoveryMethod(context, storageIpAddress, lstHosts);
+        List<Pair<ManagedObjectReference, String>> hostsUsingStaticDiscovery = hostDiscoveryMethod.getHostsUsingStaticDiscovery();
+
+        if (hostsUsingStaticDiscovery != null && hostsUsingStaticDiscovery.size() > 0) {
+            List<HostInternetScsiHbaStaticTarget> lstTargets = getTargets(storageIpAddress, storagePortNumber, iqn,
+                    chapName, chapSecret, mutualChapName, mutualChapSecret);
+
+            addRemoveInternetScsiTargetsToAllHosts(context, true, lstTargets, hostsUsingStaticDiscovery);
+        }
+
+        rescanAllHosts(context, lstHosts, true, false);
+
+        HostStorageSystemMO firstHostStorageSystem = firstHostMO.getHostStorageSystemMO();
+        List<HostScsiDisk> lstHostScsiDisks = firstHostDatastoreSystemMO.queryAvailableDisksForVmfs();
+
+        HostScsiDisk hostScsiDisk = getHostScsiDisk(firstHostStorageSystem.getStorageDeviceInfo().getScsiTopology(), lstHostScsiDisks, iqn);
 
         if (hostScsiDisk == null) {
-            // check to see if the datastore actually does exist already
-            morDs = hostDatastoreSystem.findDatastoreByName(datastoreName);
+            rescanAllHosts(context, lstHosts, false, true);
+
+            morDs = firstHostDatastoreSystemMO.findDatastoreByName(datastoreName);
 
             if (morDs != null) {
+                waitForAllHostsToSeeDatastore(lstHosts, new DatastoreMO(context, morDs));
+
+                mountVmfsDatastore(new DatastoreMO(context, morDs), lstHosts);
+
                 return morDs;
             }
 
             throw new Exception("A relevant SCSI disk could not be located to use to create a datastore.");
         }
 
-        morDs = hostDatastoreSystem.createVmfsDatastore(datastoreName, hostScsiDisk);
+        morDs = firstHostDatastoreSystemMO.createVmfsDatastore(datastoreName, hostScsiDisk);
 
         if (morDs != null) {
-            rescanAllHosts(context, lstHosts);
+            waitForAllHostsToMountDatastore(lstHosts, new DatastoreMO(context, morDs));
 
             return morDs;
         }
 
         throw new Exception("Unable to create a datastore");
+    }
+
+    private void waitForAllHostsToSeeDatastore(List<Pair<ManagedObjectReference, String>> lstHosts, DatastoreMO dsMO) throws Exception {
+        long secondsToWait = 120;
+        long endWaitTime = System.currentTimeMillis() + secondsToWait * 1000;
+
+        boolean isConditionMet = false;
+
+        while (System.currentTimeMillis() < endWaitTime && !isConditionMet) {
+            Thread.sleep(5000);
+
+            isConditionMet = verifyAllHostsSeeDatastore(lstHosts, dsMO);
+        }
+
+        if (!isConditionMet) {
+            throw new CloudRuntimeException("Not all hosts mounted the datastore");
+        }
+    }
+
+    private boolean verifyAllHostsSeeDatastore(List<Pair<ManagedObjectReference, String>> lstHosts, DatastoreMO dsMO) throws Exception {
+        int numHostsChecked = 0;
+
+        for (Pair<ManagedObjectReference, String> host: lstHosts) {
+            ManagedObjectReference morHostToMatch = host.first();
+            HostMO hostToMatchMO = new HostMO(dsMO.getContext(), morHostToMatch);
+
+            List<DatastoreHostMount> datastoreHostMounts = dsMO.getHostMounts();
+
+            for (DatastoreHostMount datastoreHostMount : datastoreHostMounts) {
+                ManagedObjectReference morHost = datastoreHostMount.getKey();
+                HostMO hostMO = new HostMO(dsMO.getContext(), morHost);
+
+                if (hostMO.getHostName().equals(hostToMatchMO.getHostName())) {
+                    numHostsChecked++;
+                }
+            }
+        }
+
+        return lstHosts.size() == numHostsChecked;
+    }
+
+    private void waitForAllHostsToMountDatastore(List<Pair<ManagedObjectReference, String>> lstHosts, DatastoreMO dsMO) throws Exception {
+        long secondsToWait = 120;
+        long endWaitTime = System.currentTimeMillis() + secondsToWait * 1000;
+
+        boolean isConditionMet = false;
+
+        while (System.currentTimeMillis() < endWaitTime && !isConditionMet) {
+            Thread.sleep(5000);
+
+            isConditionMet = verifyAllHostsMountedDatastore(lstHosts, dsMO);
+        }
+
+        if (!isConditionMet) {
+            throw new CloudRuntimeException("Not all hosts mounted the datastore");
+        }
+    }
+
+    private boolean verifyAllHostsMountedDatastore(List<Pair<ManagedObjectReference, String>> lstHosts, DatastoreMO dsMO) throws Exception {
+        int numHostsChecked = 0;
+
+        for (Pair<ManagedObjectReference, String> host: lstHosts) {
+            ManagedObjectReference morHostToMatch = host.first();
+            HostMO hostToMatchMO = new HostMO(dsMO.getContext(), morHostToMatch);
+
+            List<DatastoreHostMount> datastoreHostMounts = dsMO.getHostMounts();
+
+            for (DatastoreHostMount datastoreHostMount : datastoreHostMounts) {
+                ManagedObjectReference morHost = datastoreHostMount.getKey();
+                HostMO hostMO = new HostMO(dsMO.getContext(), morHost);
+
+                if (hostMO.getHostName().equals(hostToMatchMO.getHostName())) {
+                    if (datastoreHostMount.getMountInfo().isMounted() && datastoreHostMount.getMountInfo().isAccessible()) {
+                        numHostsChecked++;
+                    }
+                    else {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return lstHosts.size() == numHostsChecked;
     }
 
     // the purpose of this method is to find the HostScsiDisk in the passed-in array that exists (if any) because
@@ -1870,27 +2036,146 @@ public class VmwareStorageProcessor implements StorageProcessor {
         return null;
     }
 
-    private void removeVmfsDatastore(VmwareHypervisorHost hyperHost, String datastoreName, String storageIpAddress, int storagePortNumber, String iqn) throws Exception {
-        // hyperHost.unmountDatastore(datastoreName);
+    private boolean isDatastoreMounted(DatastoreMO dsMO, HostMO hostToMatchMO) throws Exception {
+        List<DatastoreHostMount> datastoreHostMounts = dsMO.getHostMounts();
 
+        for (DatastoreHostMount datastoreHostMount : datastoreHostMounts) {
+            ManagedObjectReference morHost = datastoreHostMount.getKey();
+            HostMO hostMO = new HostMO(dsMO.getContext(), morHost);
+
+            if (hostMO.getHostName().equals(hostToMatchMO.getHostName())) {
+                return datastoreHostMount.getMountInfo().isMounted();
+            }
+        }
+
+        throw new CloudRuntimeException("Unable to locate the applicable host");
+    }
+
+    private String getDatastoreUuid(DatastoreMO dsMO, HostMO hostToMatchMO) throws Exception {
+        List<DatastoreHostMount> datastoreHostMounts = dsMO.getHostMounts();
+
+        for (DatastoreHostMount datastoreHostMount : datastoreHostMounts) {
+            ManagedObjectReference morHost = datastoreHostMount.getKey();
+            HostMO hostMO = new HostMO(dsMO.getContext(), morHost);
+
+            if (hostMO.getHostName().equals(hostToMatchMO.getHostName())) {
+                String path = datastoreHostMount.getMountInfo().getPath();
+
+                String searchStr = "/vmfs/volumes/";
+                int index = path.indexOf(searchStr);
+
+                if (index == -1) {
+                    throw new CloudRuntimeException("Unable to find the following search string: " + searchStr);
+                }
+
+                return path.substring(index + searchStr.length());
+            }
+        }
+
+        throw new CloudRuntimeException("Unable to locate the UUID of the datastore");
+    }
+
+    private void mountVmfsDatastore(DatastoreMO dsMO, List<Pair<ManagedObjectReference, String>> hosts) throws Exception {
+        for (Pair<ManagedObjectReference, String> host : hosts) {
+            HostMO hostMO = new HostMO(dsMO.getContext(), host.first());
+
+            if (!isDatastoreMounted(dsMO, hostMO)) {
+                HostStorageSystemMO hostStorageSystemMO = hostMO.getHostStorageSystemMO();
+
+                hostStorageSystemMO.mountVmfsVolume(getDatastoreUuid(dsMO, hostMO));
+            }
+        }
+    }
+
+    private void unmountVmfsDatastore(VmwareContext context, VmwareHypervisorHost hyperHost, String datastoreName,
+                                      List<Pair<ManagedObjectReference, String>> hosts) throws Exception {
+        ManagedObjectReference morDs = HypervisorHostHelper.findDatastoreWithBackwardsCompatibility(hyperHost, datastoreName);
+        DatastoreMO dsMO = new DatastoreMO(context, morDs);
+
+        for (Pair<ManagedObjectReference, String> host : hosts) {
+            HostMO hostMO = new HostMO(context, host.first());
+
+            HostStorageSystemMO hostStorageSystemMO = hostMO.getHostStorageSystemMO();
+
+            hostStorageSystemMO.unmountVmfsVolume(getDatastoreUuid(dsMO, hostMO));
+        }
+    }
+
+    public void handleRemoveTargets(List<Map<String, String>> targets, VmwareHypervisorHost hyperHost) throws Exception {
         VmwareContext context = hostService.getServiceContext(null);
         ManagedObjectReference morCluster = hyperHost.getHyperHostCluster();
         ClusterMO cluster = new ClusterMO(context, morCluster);
         List<Pair<ManagedObjectReference, String>> lstHosts = cluster.getClusterHosts();
 
-        HostInternetScsiHbaStaticTarget target = new HostInternetScsiHbaStaticTarget();
+        for (Pair<ManagedObjectReference, String> host : lstHosts) {
+            List<Pair<ManagedObjectReference, String>> hosts = new ArrayList<Pair<ManagedObjectReference, String>>();
 
-        target.setAddress(storageIpAddress);
-        target.setPort(storagePortNumber);
-        target.setIScsiName(iqn);
+            hosts.add(host);
 
-        final List<HostInternetScsiHbaStaticTarget> lstTargets = new ArrayList<HostInternetScsiHbaStaticTarget>();
+            List<Map<String, String>> targetsForHost = new ArrayList<Map<String, String>>();
 
-        lstTargets.add(target);
+            for (Map<String, String> target : targets) {
+                String storageAddress = target.get(ModifyTargetsCommand.STORAGE_HOST);
 
-        addRemoveInternetScsiTargetsToAllHosts(context, false, lstTargets, lstHosts);
+                HostDiscoveryMethod hostDiscoveryMethod = getHostDiscoveryMethod(context, storageAddress, hosts);
+                List<Pair<ManagedObjectReference, String>> hostsUsingDynamicDiscovery = hostDiscoveryMethod.getHostsUsingDynamicDiscovery();
 
-        rescanAllHosts(context, lstHosts);
+                if (hostsUsingDynamicDiscovery != null && hostsUsingDynamicDiscovery.size() > 0) {
+                    targetsForHost.add(target);
+                }
+            }
+
+            if (targetsForHost.size() > 0) {
+                addRemoveInternetScsiTargetsToAllHosts(context, false, getTargets(targetsForHost), hosts);
+
+                rescanAllHosts(context, hosts, true, false);
+            }
+        }
+    }
+
+    private List<HostInternetScsiHbaStaticTarget> getTargets(List<Map<String, String>> targets) {
+        List<HostInternetScsiHbaStaticTarget> iScsiTargets = new ArrayList<HostInternetScsiHbaStaticTarget>();
+
+        for (Map<String, String> target : targets) {
+            HostInternetScsiHbaStaticTarget iScsiTarget = new HostInternetScsiHbaStaticTarget();
+
+            iScsiTarget.setAddress(target.get(ModifyTargetsCommand.STORAGE_HOST));
+            iScsiTarget.setPort(Integer.parseInt(target.get(ModifyTargetsCommand.STORAGE_PORT)));
+            iScsiTarget.setIScsiName(trimIqn(target.get(ModifyTargetsCommand.IQN)));
+
+            iScsiTargets.add(iScsiTarget);
+        }
+
+        return iScsiTargets;
+    }
+
+    private void removeVmfsDatastore(VmwareHypervisorHost hyperHost, String datastoreName, String storageIpAddress, int storagePortNumber,
+                                     String iqn) throws Exception {
+        VmwareContext context = hostService.getServiceContext(null);
+        ManagedObjectReference morCluster = hyperHost.getHyperHostCluster();
+        ClusterMO cluster = new ClusterMO(context, morCluster);
+        List<Pair<ManagedObjectReference, String>> lstHosts = cluster.getClusterHosts();
+
+        unmountVmfsDatastore(context, hyperHost, datastoreName, lstHosts);
+
+        HostDiscoveryMethod hostDiscoveryMethod = getHostDiscoveryMethod(context, storageIpAddress, lstHosts);
+        List<Pair<ManagedObjectReference, String>> hostsUsingStaticDiscovery = hostDiscoveryMethod.getHostsUsingStaticDiscovery();
+
+        if (hostsUsingStaticDiscovery != null && hostsUsingStaticDiscovery.size() > 0) {
+            HostInternetScsiHbaStaticTarget target = new HostInternetScsiHbaStaticTarget();
+
+            target.setAddress(storageIpAddress);
+            target.setPort(storagePortNumber);
+            target.setIScsiName(iqn);
+
+            final List<HostInternetScsiHbaStaticTarget> lstTargets = new ArrayList<HostInternetScsiHbaStaticTarget>();
+
+            lstTargets.add(target);
+
+            addRemoveInternetScsiTargetsToAllHosts(context, false, lstTargets, hostsUsingStaticDiscovery);
+
+            rescanAllHosts(context, hostsUsingStaticDiscovery, true, false);
+        }
     }
 
     private void createVmdk(Command cmd, DatastoreMO dsMo, String vmdkDatastorePath, Long volumeSize) throws Exception {
@@ -1929,9 +2214,7 @@ public class VmwareStorageProcessor implements StorageProcessor {
             boolean iScsiHbaConfigured = false;
 
             for (HostHostBusAdapter hba : hostStorageSystem.getStorageDeviceInfo().getHostBusAdapter()) {
-                if (hba instanceof HostInternetScsiHba) {
-                    // just finding an instance of HostInternetScsiHba means that we have found at least one configured iSCSI HBA
-                    // at least one iSCSI HBA must be configured before a CloudStack user can use this host for iSCSI storage
+                if (hba instanceof HostInternetScsiHba && ((HostInternetScsiHba)hba).isIsSoftwareBased()) {
                     iScsiHbaConfigured = true;
 
                     final String iScsiHbaDevice = hba.getDevice();
@@ -1947,9 +2230,6 @@ public class VmwareStorageProcessor implements StorageProcessor {
                                 } else {
                                     hss.removeInternetScsiStaticTargets(iScsiHbaDevice, lstTargets);
                                 }
-
-                                hss.rescanHba(iScsiHbaDevice);
-                                hss.rescanVmfs();
                             } catch (Exception ex) {
                                 synchronized (exceptions) {
                                     exceptions.add(ex);
@@ -1976,7 +2256,12 @@ public class VmwareStorageProcessor implements StorageProcessor {
         }
     }
 
-    private void rescanAllHosts(VmwareContext context, List<Pair<ManagedObjectReference, String>> lstHosts) throws Exception {
+    private void rescanAllHosts(VmwareContext context, List<Pair<ManagedObjectReference, String>> lstHosts, final boolean rescanHba, final boolean rescanVmfs) throws Exception {
+        if (!rescanHba && !rescanVmfs) {
+            // nothing to do
+            return;
+        }
+
         ExecutorService executorService = Executors.newFixedThreadPool(lstHosts.size());
 
         final List<Exception> exceptions = new ArrayList<Exception>();
@@ -1988,9 +2273,7 @@ public class VmwareStorageProcessor implements StorageProcessor {
             boolean iScsiHbaConfigured = false;
 
             for (HostHostBusAdapter hba : hostStorageSystem.getStorageDeviceInfo().getHostBusAdapter()) {
-                if (hba instanceof HostInternetScsiHba) {
-                    // just finding an instance of HostInternetScsiHba means that we have found at least one configured iSCSI HBA
-                    // at least one iSCSI HBA must be configured before a CloudStack user can use this host for iSCSI storage
+                if (hba instanceof HostInternetScsiHba && ((HostInternetScsiHba)hba).isIsSoftwareBased()) {
                     iScsiHbaConfigured = true;
 
                     final String iScsiHbaDevice = hba.getDevice();
@@ -2001,8 +2284,13 @@ public class VmwareStorageProcessor implements StorageProcessor {
                         @Override
                         public void run() {
                             try {
-                                hss.rescanHba(iScsiHbaDevice);
-                                hss.rescanVmfs();
+                                if (rescanHba) {
+                                    hss.rescanHba(iScsiHbaDevice);
+                                }
+
+                                if (rescanVmfs) {
+                                    hss.rescanVmfs();
+                                }
                             } catch (Exception ex) {
                                 synchronized (exceptions) {
                                     exceptions.add(ex);
@@ -2079,7 +2367,23 @@ public class VmwareStorageProcessor implements StorageProcessor {
         }
     }
 
-    private void removeManagedTargetsFromCluster(List<String> iqns) throws Exception {
+    private class ManagedTarget {
+        private final String storageAddress;
+        private final int storagePort;
+        private final String iqn;
+
+        public ManagedTarget(String storageAddress, int storagePort, String iqn) {
+            this.storageAddress = storageAddress;
+            this.storagePort = storagePort;
+            this.iqn = iqn;
+        }
+
+        public String toString() {
+            return storageAddress + storagePort + iqn;
+        }
+    }
+
+    private void removeManagedTargetsFromCluster(List<String> managedDatastoreNames) throws Exception {
         List<HostInternetScsiHbaStaticTarget> lstManagedTargets = new ArrayList<HostInternetScsiHbaStaticTarget>();
 
         VmwareContext context = hostService.getServiceContext(null);
@@ -2087,16 +2391,20 @@ public class VmwareStorageProcessor implements StorageProcessor {
         ManagedObjectReference morCluster = hyperHost.getHyperHostCluster();
         ClusterMO cluster = new ClusterMO(context, morCluster);
         List<Pair<ManagedObjectReference, String>> lstHosts = cluster.getClusterHosts();
-        HostMO host = new HostMO(context, lstHosts.get(0).first());
-        HostStorageSystemMO hostStorageSystem = host.getHostStorageSystemMO();
+        HostMO hostMO = new HostMO(context, lstHosts.get(0).first());
+        HostStorageSystemMO hostStorageSystem = hostMO.getHostStorageSystemMO();
+
+        for (String managedDatastoreName : managedDatastoreNames) {
+            unmountVmfsDatastore(context, hyperHost, managedDatastoreName, lstHosts);
+        }
 
         for (HostHostBusAdapter hba : hostStorageSystem.getStorageDeviceInfo().getHostBusAdapter()) {
-            if (hba instanceof HostInternetScsiHba) {
+            if (hba instanceof HostInternetScsiHba && ((HostInternetScsiHba)hba).isIsSoftwareBased()) {
                 List<HostInternetScsiHbaStaticTarget> lstTargets = ((HostInternetScsiHba)hba).getConfiguredStaticTarget();
 
                 if (lstTargets != null) {
                     for (HostInternetScsiHbaStaticTarget target : lstTargets) {
-                        if (iqns.contains(target.getIScsiName())) {
+                        if (managedDatastoreNames.contains(VmwareResource.createDatastoreNameFromIqn(target.getIScsiName()))) {
                             lstManagedTargets.add(target);
                         }
                     }
@@ -2104,13 +2412,34 @@ public class VmwareStorageProcessor implements StorageProcessor {
             }
         }
 
-        addRemoveInternetScsiTargetsToAllHosts(context, false, lstManagedTargets, lstHosts);
+        for (Pair<ManagedObjectReference, String> host : lstHosts) {
+            List<Pair<ManagedObjectReference, String>> hosts = new ArrayList<Pair<ManagedObjectReference, String>>();
 
-        rescanAllHosts(context, lstHosts);
+            hosts.add(host);
+
+            List<HostInternetScsiHbaStaticTarget> staticTargetsForHost = new ArrayList<HostInternetScsiHbaStaticTarget>();
+
+            for (HostInternetScsiHbaStaticTarget iScsiManagedTarget : lstManagedTargets) {
+                String storageAddress = iScsiManagedTarget.getAddress();
+
+                HostDiscoveryMethod hostDiscoveryMethod = getHostDiscoveryMethod(context, storageAddress, hosts);
+                List<Pair<ManagedObjectReference, String>> hostsUsingStaticDiscovery = hostDiscoveryMethod.getHostsUsingStaticDiscovery();
+
+                if (hostsUsingStaticDiscovery != null && hostsUsingStaticDiscovery.size() > 0) {
+                    staticTargetsForHost.add(iScsiManagedTarget);
+                }
+            }
+
+            if (staticTargetsForHost.size() > 0) {
+                addRemoveInternetScsiTargetsToAllHosts(context, false, staticTargetsForHost, hosts);
+
+                rescanAllHosts(context, hosts, true, false);
+            }
+        }
     }
 
-    private List<String> getManagedIqnsFromVirtualDisks(List<VirtualDisk> virtualDisks) {
-        List<String> managedIqns = new ArrayList<String>();
+    private List<String> getManagedDatastoreNamesFromVirtualDisks(List<VirtualDisk> virtualDisks) {
+        List<String> managedDatastoreNames = new ArrayList<String>();
 
         if (virtualDisks != null) {
             for (VirtualDisk virtualDisk : virtualDisks) {
@@ -2132,7 +2461,7 @@ public class VmwareStorageProcessor implements StorageProcessor {
                             path = path.substring(0, index);
 
                             if (path.startsWith("iqn.")) {
-                                managedIqns.add(path);
+                                managedDatastoreNames.add("-" + path + "-0");
                             }
                         }
                     }
@@ -2140,7 +2469,7 @@ public class VmwareStorageProcessor implements StorageProcessor {
             }
         }
 
-        return managedIqns;
+        return managedDatastoreNames;
     }
 
     private Long restoreVolumeFromSecStorage(VmwareHypervisorHost hyperHost, DatastoreMO primaryDsMo, String newVolumeName, String secStorageUrl, String secStorageDir,

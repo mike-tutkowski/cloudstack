@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import javax.inject.Inject;
 
@@ -47,9 +48,8 @@ import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.CreateStoragePoolCommand;
 import com.cloud.agent.api.DeleteStoragePoolCommand;
+import com.cloud.agent.api.ModifyTargetsCommand;
 import com.cloud.agent.api.StoragePoolInfo;
-import com.cloud.dc.ClusterDetailsDao;
-import com.cloud.dc.ClusterDetailsVO;
 import com.cloud.dc.ClusterVO;
 import com.cloud.dc.dao.ClusterDao;
 import com.cloud.dc.dao.DataCenterDao;
@@ -79,7 +79,6 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
     @Inject private AccountDetailsDao _accountDetailsDao;
     @Inject private AgentManager _agentMgr;
     @Inject private ClusterDao _clusterDao;
-    @Inject private ClusterDetailsDao _clusterDetailsDao;
     @Inject private DataCenterDao _zoneDao;
     @Inject private HostDao _hostDao;
     @Inject private PrimaryDataStoreDao _primaryDataStoreDao;
@@ -89,7 +88,7 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
     @Inject private StoragePoolAutomation _storagePoolAutomation;
     @Inject private StoragePoolDetailsDao _storagePoolDetailsDao;
     @Inject private StoragePoolHostDao _storagePoolHostDao;
-    @Inject protected TemplateManager _tmpltMgr;
+    @Inject private TemplateManager _tmpltMgr;
 
     // invoked to add primary storage that is based on the SolidFire plug-in
     @Override
@@ -234,7 +233,7 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
 
         details.put(SolidFireUtil.VOLUME_ID, String.valueOf(sfVolume.getId()));
 
-        parameters.setUuid(iqn);
+        parameters.setUuid(UUID.randomUUID().toString());
 
         if (HypervisorType.VMware.equals(hypervisorType)) {
             String datastore = iqn.replace("/", "_");
@@ -262,9 +261,8 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
         // place the newly created volume in the Volume Access Group
         try {
             List<HostVO> hosts = _hostDao.findByClusterId(clusterId);
-            ClusterVO cluster = _clusterDao.findById(clusterId);
 
-            SolidFireUtil.placeVolumeInVolumeAccessGroup(sfConnection, sfVolume.getId(), dataStore.getId(), cluster.getUuid(), hosts, _clusterDetailsDao);
+            SolidFireUtil.placeVolumeInVolumeAccessGroups(sfConnection, sfVolume.getId(), hosts);
 
             SolidFireUtil.SolidFireAccount sfAccount = sfCreateVolume.getAccount();
             Account csAccount = CallContext.current().getCallingAccount();
@@ -305,7 +303,7 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
         private final SolidFireUtil.SolidFireVolume _sfVolume;
         private final SolidFireUtil.SolidFireAccount _sfAccount;
 
-        public SolidFireCreateVolume(SolidFireUtil.SolidFireVolume sfVolume, SolidFireUtil.SolidFireAccount sfAccount) {
+        SolidFireCreateVolume(SolidFireUtil.SolidFireVolume sfVolume, SolidFireUtil.SolidFireAccount sfAccount) {
             _sfVolume = sfVolume;
             _sfAccount = sfAccount;
         }
@@ -440,7 +438,7 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
         } else {
             _primaryDataStoreDao.expunge(storagePool.getId());
 
-            String msg = "";
+            String msg;
 
             if (answer != null) {
                 msg = "Cannot create storage pool through host '" + hostId + "' due to the following: " + answer.getDetails();
@@ -499,6 +497,7 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
         }
 
         Long clusterId = null;
+        Long hostId = null;
 
         for (StoragePoolHostVO host : hostPoolRecords) {
             DeleteStoragePoolCommand deleteCmd = new DeleteStoragePoolCommand(storagePool);
@@ -529,24 +528,37 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
 
             final Answer answer = _agentMgr.easySend(host.getHostId(), deleteCmd);
 
-            if (answer != null && answer.getResult()) {
-                s_logger.info("Successfully deleted storage pool using Host ID " + host.getHostId());
+            if (answer != null) {
+                if (answer.getResult()) {
+                    s_logger.info("Successfully deleted storage pool using Host ID " + host.getHostId());
 
-                HostVO hostVO = _hostDao.findById(host.getHostId());
+                    HostVO hostVO = _hostDao.findById(host.getHostId());
 
-                if (hostVO != null) {
-                    clusterId = hostVO.getClusterId();
+                    if (hostVO != null) {
+                        clusterId = hostVO.getClusterId();
+                        hostId = hostVO.getId();
+                    }
+
+                    break;
+                } else {
+                    s_logger.error("Failed to delete storage pool using Host ID " + host.getHostId() + ": " + answer.getResult());
                 }
-
-                break;
             }
             else {
-                s_logger.error("Failed to delete storage pool using Host ID " + host.getHostId() + ": " + answer.getResult());
+                s_logger.error("Failed to delete storage pool using Host ID " + host.getHostId());
             }
         }
 
         if (clusterId != null) {
-            removeVolumeFromVag(storagePool.getId(), clusterId);
+            removeVolumeFromVolumeAccessGroups(storagePool.getId(), clusterId);
+        }
+
+        if (hostId != null) {
+            String iqn = _storagePoolDetailsDao.findDetail(storagePool.getId(), SolidFireUtil.IQN).getValue();
+            String storageAddress = _storagePoolDetailsDao.findDetail(storagePool.getId(), SolidFireUtil.STORAGE_VIP).getValue();
+            int storagePort = Integer.parseInt(_storagePoolDetailsDao.findDetail(storagePool.getId(), SolidFireUtil.STORAGE_PORT).getValue());
+
+            handleTargetsForVMware(hostId, storageAddress, storagePort, iqn);
         }
 
         deleteSolidFireVolume(storagePool.getId());
@@ -554,23 +566,54 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
         return _primaryDataStoreHelper.deletePrimaryDataStore(dataStore);
     }
 
-    private void removeVolumeFromVag(long storagePoolId, long clusterId) {
+    private void handleTargetsForVMware(long hostId, String storageAddress, int storagePort, String iScsiName) {
+        HostVO host = _hostDao.findById(hostId);
+
+        if (host.getHypervisorType() == HypervisorType.VMware) {
+            ModifyTargetsCommand cmd = new ModifyTargetsCommand();
+
+            List<Map<String, String>> targets = new ArrayList<Map<String, String>>();
+
+            Map<String, String> target = new HashMap<String, String>();
+
+            target.put(ModifyTargetsCommand.STORAGE_HOST, storageAddress);
+            target.put(ModifyTargetsCommand.STORAGE_PORT, String.valueOf(storagePort));
+            target.put(ModifyTargetsCommand.IQN, iScsiName);
+
+            targets.add(target);
+
+            cmd.setTargets(targets);
+
+            sendModifyTargetsCommand(cmd, hostId);
+        }
+    }
+
+    private void sendModifyTargetsCommand(ModifyTargetsCommand cmd, long hostId) {
+        Answer answer = _agentMgr.easySend(hostId, cmd);
+
+        if (answer == null) {
+            String msg = "Unable to get an answer to the modify targets command";
+
+            s_logger.warn(msg);
+        }
+        else if (!answer.getResult()) {
+            String msg = "Unable to modify target on the following host: " + hostId;
+
+            s_logger.warn(msg);
+        }
+    }
+
+    private void removeVolumeFromVolumeAccessGroups(long storagePoolId, long clusterId) {
         long sfVolumeId = getVolumeId(storagePoolId);
-        ClusterDetailsVO clusterDetail = _clusterDetailsDao.findDetail(clusterId, SolidFireUtil.getVagKey(storagePoolId));
 
-        String vagId = clusterDetail != null ? clusterDetail.getValue() : null;
+        SolidFireUtil.SolidFireConnection sfConnection = SolidFireUtil.getSolidFireConnection(storagePoolId, _storagePoolDetailsDao);
 
-        if (vagId != null) {
-            List<HostVO> hosts = _hostDao.findByClusterId(clusterId);
+        List<SolidFireUtil.SolidFireVag> sfVags = SolidFireUtil.getAllSolidFireVags(sfConnection);
 
-            SolidFireUtil.SolidFireConnection sfConnection = SolidFireUtil.getSolidFireConnection(storagePoolId, _storagePoolDetailsDao);
-
-            SolidFireUtil.SolidFireVag sfVag = SolidFireUtil.getSolidFireVag(sfConnection, Long.parseLong(vagId));
-
-            String[] hostIqns = SolidFireUtil.getNewHostIqns(sfVag.getInitiators(), SolidFireUtil.getIqnsFromHosts(hosts));
-            long[] volumeIds = SolidFireUtil.getNewVolumeIds(sfVag.getVolumeIds(), sfVolumeId, false);
-
-            SolidFireUtil.modifySolidFireVag(sfConnection, sfVag.getId(), hostIqns, volumeIds);
+        for (SolidFireUtil.SolidFireVag sfVag : sfVags) {
+            if (SolidFireUtil.sfVagContains(sfVag, sfVolumeId, clusterId, _hostDao)) {
+                SolidFireUtil.removeVolumeIdsFromSolidFireVag(sfConnection, sfVag.getId(), new long[] { sfVolumeId });
+            }
         }
     }
 
