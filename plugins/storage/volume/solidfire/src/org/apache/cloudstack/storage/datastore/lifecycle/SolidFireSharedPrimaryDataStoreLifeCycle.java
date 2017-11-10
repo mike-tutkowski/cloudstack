@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import javax.inject.Inject;
 
@@ -232,7 +233,7 @@ public class SolidFireSharedPrimaryDataStoreLifeCycle implements PrimaryDataStor
 
         details.put(SolidFireUtil.VOLUME_ID, String.valueOf(sfVolume.getId()));
 
-        parameters.setUuid(iqn);
+        parameters.setUuid(UUID.randomUUID().toString());
 
         if (HypervisorType.VMware.equals(hypervisorType)) {
             String datastore = iqn.replace("/", "_");
