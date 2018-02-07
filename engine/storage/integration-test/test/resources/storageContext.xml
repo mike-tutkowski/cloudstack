@@ -45,6 +45,7 @@
   <bean id="primaryDataStoreDetailsDaoImpl" class="org.apache.cloudstack.storage.volume.db.PrimaryDataStoreDetailsDaoImpl" />
   <bean id="templatePrimaryDataStoreDaoImpl" class="org.apache.cloudstack.storage.volume.db.TemplatePrimaryDataStoreDaoImpl" />
   <bean id="LocalStoragePoolAllocator" class="org.apache.cloudstack.storage.allocator.LocalStoragePoolAllocator"/>
+  <bean id="accountClusterScopeStoragePoolAllocator" class="org.apache.cloudstack.storage.allocator.AccountClusterScopeStoragePoolAllocator" />
   <bean id="clusterScopeStoragePoolAllocator" class="org.apache.cloudstack.storage.allocator.ClusterScopeStoragePoolAllocator" />
   <bean id="zoneWideStoragePoolAllocator" class="org.apache.cloudstack.storage.allocator.ZoneWideStoragePoolAllocator" />
   <bean id="dataStoreProviderManagerImpl" class="org.apache.cloudstack.storage.datastore.provider.DataStoreProviderManagerImpl" />

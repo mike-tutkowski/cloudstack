@@ -31,7 +31,9 @@
         class="org.apache.cloudstack.storage.allocator.LocalStoragePoolAllocator">
         <property name="name" value="LocalStorage" />
     </bean>
-    
+
+    <bean id="accountClusterScopeStoragePoolAllocator"
+        class="org.apache.cloudstack.storage.allocator.AccountClusterScopeStoragePoolAllocator" />
     <bean id="clusterScopeStoragePoolAllocator"
         class="org.apache.cloudstack.storage.allocator.ClusterScopeStoragePoolAllocator" />
     <bean id="zoneWideStoragePoolAllocator"
