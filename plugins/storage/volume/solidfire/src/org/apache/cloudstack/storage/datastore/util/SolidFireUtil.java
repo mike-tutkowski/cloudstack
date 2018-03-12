@@ -675,6 +675,39 @@ public class SolidFireUtil {
         }
     }
 
+    public static void modifySolidFireVolumeQoS(SolidFireConnection sfConnection, long volumeId, long minIops, long maxIops, long burstIops)
+    {
+        JsonObject volumeToModify = new JsonObject();
+
+        volumeToModify.addProperty("method", "ModifyVolume");
+
+        JsonObject params = new JsonObject();
+
+        volumeToModify.add("params", params);
+
+        params.addProperty("volumeID", volumeId);
+
+        JsonObject qos = new JsonObject();
+
+        params.add("qos", qos);
+
+        qos.addProperty("minIOPS", minIops);
+        qos.addProperty("maxIOPS", maxIops);
+        qos.addProperty("burstIOPS", burstIops);
+
+        final Gson gson = new GsonBuilder().create();
+
+        String strVolumeToModifyJson = gson.toJson(volumeToModify);
+
+        String strVolumeModifyResultJson = executeJsonRpc(sfConnection, strVolumeToModifyJson);
+
+        JsonError jsonError = gson.fromJson(strVolumeModifyResultJson, JsonError.class);
+
+        if (jsonError.error != null) {
+            throw new IllegalStateException(jsonError.error.message);
+        }
+    }
+
     public static SolidFireVolume getSolidFireVolume(SolidFireConnection sfConnection, long lVolumeId)
     {
         final Gson gson = new GsonBuilder().create();

@@ -36,6 +36,7 @@ import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreCapabilities;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
 import org.apache.cloudstack.engine.subsystem.api.storage.ObjectInDataStoreStateMachine.Event;
+import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStoreDriver;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.StrategyPriority;
 import org.apache.cloudstack.engine.subsystem.api.storage.TemplateInfo;
@@ -584,6 +585,8 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
             destVolumeInfo = _volumeDataFactory.getVolume(destVolumeInfo.getId(), destVolumeInfo.getDataStore());
 
+            handleQualityOfServiceForVolumeMigration(destVolumeInfo, PrimaryDataStoreDriver.QualityOfServiceState.MIGRATION);
+
             long srcStoragePoolId = srcVolumeInfo.getPoolId();
             StoragePoolVO srcStoragePoolVO = _storagePoolDao.findById(srcStoragePoolId);
 
@@ -612,6 +615,8 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             throw new CloudRuntimeException(errMsg);
         }
         finally {
+            handleQualityOfServiceForVolumeMigration(destVolumeInfo, PrimaryDataStoreDriver.QualityOfServiceState.NO_MIGRATION);
+
             CopyCmdAnswer copyCmdAnswer;
 
             if (errMsg != null) {
@@ -1234,6 +1239,8 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
                 destVolumeInfo = _volumeDataFactory.getVolume(destVolume.getId(), destDataStore);
 
+                handleQualityOfServiceForVolumeMigration(destVolumeInfo, PrimaryDataStoreDriver.QualityOfServiceState.MIGRATION);
+
                 _volumeService.grantAccess(destVolumeInfo, destHost, destDataStore);
 
                 String connectedPath = connectHostToVolume(destHost, destVolumeInfo);
@@ -1340,6 +1347,8 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
         for (Map.Entry<VolumeInfo, VolumeInfo> entry : srcVolumeInfoToDestVolumeInfo.entrySet()) {
             VolumeInfo srcVolumeInfo = entry.getKey();
             VolumeInfo destVolumeInfo = entry.getValue();
+
+            handleQualityOfServiceForVolumeMigration(destVolumeInfo, PrimaryDataStoreDriver.QualityOfServiceState.NO_MIGRATION);
 
             if (success) {
                 srcVolumeInfo.processEvent(Event.OperationSuccessed);
@@ -1718,6 +1727,15 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             result.setResult(errMsg);
 
             callback.complete(result);
+        }
+    }
+
+    private void handleQualityOfServiceForVolumeMigration(VolumeInfo volumeInfo, PrimaryDataStoreDriver.QualityOfServiceState qualityOfServiceState) {
+        try {
+            ((PrimaryDataStoreDriver)volumeInfo.getDataStore().getDriver()).handleQualityOfServiceForVolumeMigration(volumeInfo, qualityOfServiceState);
+        }
+        catch (Exception ex) {
+            LOGGER.warn(ex);
         }
     }
 }

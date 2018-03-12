@@ -90,6 +90,7 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
     private static final long MAX_IOPS_FOR_TEMPLATE_VOLUME = 20000L;
     private static final long MIN_IOPS_FOR_TEMP_VOLUME = 100L;
     private static final long MAX_IOPS_FOR_TEMP_VOLUME = 20000L;
+    private static final long MAX_IOPS_FOR_MIGRATING_VOLUME = 50000L;
     private static final long MIN_IOPS_FOR_SNAPSHOT_VOLUME = 100L;
     private static final long MAX_IOPS_FOR_SNAPSHOT_VOLUME = 20000L;
 
@@ -1443,5 +1444,20 @@ public class SolidFirePrimaryDataStoreDriver implements PrimaryDataStoreDriver {
 
             callback.complete(result);
         }
+    }
+
+    @Override
+    public void handleQualityOfServiceForVolumeMigration(VolumeInfo volumeInfo, QualityOfServiceState qualityOfServiceState) {
+        SolidFireUtil.SolidFireConnection sfConnection = SolidFireUtil.getSolidFireConnection(volumeInfo.getPoolId(), _storagePoolDetailsDao);
+
+        Iops iops;
+
+        if (QualityOfServiceState.MIGRATION.equals(qualityOfServiceState)) {
+            iops = getIops(volumeInfo.getMinIops(), MAX_IOPS_FOR_MIGRATING_VOLUME, volumeInfo.getPoolId());
+        } else {
+            iops = getIops(volumeInfo.getMinIops(), volumeInfo.getMaxIops(), volumeInfo.getPoolId());
+        }
+
+        SolidFireUtil.modifySolidFireVolumeQoS(sfConnection, Long.parseLong(volumeInfo.getFolder()), iops.getMinIops(), iops.getMaxIops(), iops.getBurstIops());
     }
 }
