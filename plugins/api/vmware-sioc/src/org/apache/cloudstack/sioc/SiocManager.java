@@ -17,5 +17,5 @@
 package org.apache.cloudstack.sioc;
 
 public interface SiocManager {
-    void updateSiocInfo(long zoneId, long storagePoolId, int sharesPerGB, int limitIopsPerGB, int iopsNotifyThreshold) throws Exception;
+    void updateSiocInfo(long zoneId, long storagePoolId, float sharesPerGB, float limitIopsPerGB, int iopsNotifyThreshold) throws Exception;
 }

@@ -65,8 +65,8 @@ import com.vmware.vim25.VirtualMachineConfigSpec;
 public class SiocManagerImpl implements SiocManager {
     private static final Logger LOGGER = Logger.getLogger(SiocManagerImpl.class);
     private static final int LOCK_TIME_IN_SECONDS = 3;
-    private static final int ONE_GB_IN_BYTES = 1000000000;
-    private static final int LOWEST_SHARES_PER_VIRTUAL_DISK = 2000; // We want this to be greater than 1,000, which is the VMware default value.
+    private static final int ONE_GiB_IN_BYTES = 1073741824;
+    private static final int LOWEST_SHARES_PER_VIRTUAL_DISK = 1500; // We want this to be greater than 1,000, which is the VMware default value.
     private static final int HIGHEST_SHARES_PER_VIRTUAL_DISK = 4000; // VMware limit
     private static final int LOWEST_LIMIT_IOPS_PER_VIRTUAL_DISK = 16; // VMware limit
     private static final int HIGHEST_LIMIT_IOPS_PER_VIRTUAL_DISK = 2147483647; // VMware limit
@@ -81,8 +81,8 @@ public class SiocManagerImpl implements SiocManager {
     @Inject private VolumeDao volumeDao;
 
     @Override
-    public void updateSiocInfo(long zoneId, long storagePoolId, int sharesPerGB, int limitIopsPerGB, int iopsNotifyThreshold) throws Exception {
-        LOGGER.info("'SiocManagerImpl.updateSiocInfo(long, long, int, int, int)' method invoked");
+    public void updateSiocInfo(long zoneId, long storagePoolId, float sharesPerGB, float limitIopsPerGB, int iopsNotifyThreshold) throws Exception {
+        LOGGER.info("'SiocManagerImpl.updateSiocInfo(long, long, float, float, int)' method invoked");
 
         DataCenterVO zone = zoneDao.findById(zoneId);
 
@@ -175,7 +175,7 @@ public class SiocManagerImpl implements SiocManager {
     }
 
     private ResultWrapper updateSiocInfo(VMwareUtil.VMwareConnection connection, Map<String, ManagedObjectReference> nameToVm, Long instanceId,
-                                         StoragePoolVO storagePool, int sharesPerGB, int limitIopsPerGB) throws Exception {
+                                         StoragePoolVO storagePool, float sharesPerGB, float limitIopsPerGB) throws Exception {
         int limitIopsTotal = 0;
         List<ManagedObjectReference> tasks = new ArrayList<>();
 
@@ -385,10 +385,10 @@ public class SiocManagerImpl implements SiocManager {
         return null;
     }
 
-    private int getNewSharesBasedOnVolumeSize(VolumeVO volumeVO, int sharesPerGB) {
+    private int getNewSharesBasedOnVolumeSize(VolumeVO volumeVO, float sharesPerGB) {
         long volumeSizeInBytes = getVolumeSizeInBytes(volumeVO);
 
-        double sizeInGB = volumeSizeInBytes / (double)ONE_GB_IN_BYTES;
+        double sizeInGB = volumeSizeInBytes / (double)ONE_GiB_IN_BYTES;
 
         int shares = LOWEST_SHARES_PER_VIRTUAL_DISK + ((int)(sharesPerGB * sizeInGB));
 
@@ -402,18 +402,18 @@ public class SiocManagerImpl implements SiocManager {
         return shares;
     }
 
-    private long getNewLimitIopsBasedOnVolumeSize(VolumeVO volumeVO, int limitIopsPerGB) {
+    private long getNewLimitIopsBasedOnVolumeSize(VolumeVO volumeVO, float limitIopsPerGB) {
         long volumeSizeInBytes = getVolumeSizeInBytes(volumeVO);
 
         return getNewLimitIopsBasedOnVolumeSize(volumeSizeInBytes, limitIopsPerGB);
     }
 
-    private long getNewLimitIopsBasedOnVolumeSize(Long volumeSizeInBytes, int limitIopsPerGB) {
+    private long getNewLimitIopsBasedOnVolumeSize(Long volumeSizeInBytes, float limitIopsPerGB) {
         if (volumeSizeInBytes == null) {
-            volumeSizeInBytes = (long)ONE_GB_IN_BYTES;
+            volumeSizeInBytes = (long)ONE_GiB_IN_BYTES;
         }
 
-        double sizeInGB = volumeSizeInBytes / (double)ONE_GB_IN_BYTES;
+        double sizeInGB = volumeSizeInBytes / (double)ONE_GiB_IN_BYTES;
 
         long limitIops = (long)(limitIopsPerGB * sizeInGB);
 
@@ -428,7 +428,7 @@ public class SiocManagerImpl implements SiocManager {
     }
 
     private long getVolumeSizeInBytes(VolumeVO volumeVO) {
-        return volumeVO.getSize() != null && volumeVO.getSize() > ONE_GB_IN_BYTES ? volumeVO.getSize() : ONE_GB_IN_BYTES;
+        return volumeVO.getSize() != null && volumeVO.getSize() > ONE_GiB_IN_BYTES ? volumeVO.getSize() : ONE_GiB_IN_BYTES;
     }
 
     private LoginInfo getLoginInfo(long zoneId) {

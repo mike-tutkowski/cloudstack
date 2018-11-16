@@ -51,11 +51,11 @@ public class UpdateSiocInfoCmd extends BaseCmd {
     @Parameter(name = ApiConstants.STORAGE_ID, type = CommandType.UUID, entityType = StoragePoolResponse.class, description = "Storage Pool ID", required = true)
     private long storagePoolId;
 
-    @Parameter(name = "sharespergb", type = CommandType.INTEGER, description = "Shares per GB", required = true)
-    private int sharesPerGB;
+    @Parameter(name = "sharespergb", type = CommandType.FLOAT, description = "Shares per GB", required = true)
+    private float sharesPerGB;
 
-    @Parameter(name = "limitiopspergb", type = CommandType.INTEGER, description = "Limit IOPS per GB", required = true)
-    private int limitIopsPerGB;
+    @Parameter(name = "limitiopspergb", type = CommandType.FLOAT, description = "Limit IOPS per GB", required = true)
+    private float limitIopsPerGB;
 
     @Parameter(name = "iopsnotifythreshold", type = CommandType.INTEGER, description = "Notify if IOPS above this value", required = true)
     private int iopsNotifyThreshold;
